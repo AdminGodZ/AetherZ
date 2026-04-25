@@ -1,4 +1,5 @@
 #include "engine/board.hpp"
+#include "engine/evaluate.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 #include "engine/types.hpp"
@@ -110,10 +111,51 @@ void test_time_limited_search_returns_a_move()
     require(result.nodes > 0, "time-limited search visits nodes");
 }
 
+void test_repeated_search_uses_transposition_table()
+{
+    auto board = aetherz::Board::startpos();
+    aetherz::Search search;
+    search.set_hash_size_mb(1);
+
+    const auto first = search.find_best_move(board, 4);
+    const auto second = search.find_best_move(board, 4);
+
+    require(first.best_move.has_value(), "first TT search finds a move");
+    require(second.best_move.has_value(), "second TT search finds a move");
+    require(second.tt_hits > 0, "repeated search produces TT hits");
+}
+
+void test_evaluation_is_balanced_at_start()
+{
+    const auto board = aetherz::Board::startpos();
+
+    require(aetherz::evaluate_white(board) == 0, "start position evaluates as balanced");
+    require(aetherz::evaluate_side_to_move(board) == 0, "side-to-move start eval is balanced");
+}
+
+void test_evaluation_rewards_material()
+{
+    const auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
+
+    require(board.has_value(), "material eval test FEN parses");
+    require(aetherz::evaluate_white(*board) > 800, "white queen advantage scores strongly positive");
+}
+
+void test_piece_square_tables_reward_active_knight()
+{
+    const auto central = aetherz::Board::from_fen("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1");
+    const auto corner = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/N3K3 w - - 0 1");
+
+    require(central.has_value(), "central knight FEN parses");
+    require(corner.has_value(), "corner knight FEN parses");
+    require(aetherz::evaluate_white(*central) > aetherz::evaluate_white(*corner), "PST rewards active knight placement");
+}
+
 void test_uci_go_time_controls()
 {
     std::istringstream input{
         "uci\n"
+        "setoption name Hash value 16\n"
         "isready\n"
         "position startpos moves e2e4 e7e5\n"
         "go movetime 25\n"
@@ -126,6 +168,7 @@ void test_uci_go_time_controls()
 
     const std::string text = output.str();
     require(text.find("uciok") != std::string::npos, "UCI handshake succeeds");
+    require(text.find("option name Hash") != std::string::npos, "UCI advertises Hash option");
     require(text.find("readyok") != std::string::npos, "UCI readiness succeeds");
     require(text.find("info depth") != std::string::npos, "UCI search reports iterative depth info");
     require(text.find("bestmove ") != std::string::npos, "UCI time-control search returns bestmove");
@@ -142,6 +185,10 @@ int main()
     test_uci_move_text_parses_promotions();
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
+    test_repeated_search_uses_transposition_table();
+    test_evaluation_is_balanced_at_start();
+    test_evaluation_rewards_material();
+    test_piece_square_tables_reward_active_knight();
     test_uci_go_time_controls();
 
     std::cout << "engine tests passed\n";

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/board.hpp"
+#include "engine/search.hpp"
 
 #include <iosfwd>
 #include <string>
@@ -15,7 +16,9 @@ public:
 
 private:
     Board board_ = Board::startpos();
+    Search search_;
 
+    void handle_setoption(const std::vector<std::string>& tokens);
     void handle_position(const std::vector<std::string>& tokens);
     void handle_go(const std::vector<std::string>& tokens, std::ostream& output);
     void handle_perft(const std::vector<std::string>& tokens, std::ostream& output);

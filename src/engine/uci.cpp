@@ -144,11 +144,15 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
         if (command == "uci") {
             output << "id name AetherZ\n";
             output << "id author admingod\n";
+            output << "option name Hash type spin default 32 min 1 max 1024\n";
             output << "uciok\n";
         } else if (command == "isready") {
             output << "readyok\n";
+        } else if (command == "setoption") {
+            handle_setoption(tokens);
         } else if (command == "ucinewgame") {
             board_ = Board::startpos();
+            search_.clear_hash();
         } else if (command == "position") {
             handle_position(tokens);
         } else if (command == "go") {
@@ -168,6 +172,39 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
         }
 
         output.flush();
+    }
+}
+
+void UciEngine::handle_setoption(const std::vector<std::string>& tokens)
+{
+    std::vector<std::string> name_parts;
+    std::vector<std::string> value_parts;
+    std::vector<std::string>* current = nullptr;
+
+    for (std::size_t index = 1; index < tokens.size(); ++index) {
+        if (tokens[index] == "name") {
+            current = &name_parts;
+            continue;
+        }
+        if (tokens[index] == "value") {
+            current = &value_parts;
+            continue;
+        }
+        if (current != nullptr) {
+            current->push_back(tokens[index]);
+        }
+    }
+
+    const std::string name = join_words(name_parts, 0, name_parts.size());
+    const std::string value = join_words(value_parts, 0, value_parts.size());
+    if (name != "Hash" || value.empty()) {
+        return;
+    }
+
+    try {
+        const int megabytes = std::clamp(std::stoi(value), 1, 1024);
+        search_.set_hash_size_mb(static_cast<std::size_t>(megabytes));
+    } catch (...) {
     }
 }
 
@@ -208,7 +245,6 @@ void UciEngine::handle_position(const std::vector<std::string>& tokens)
 
 void UciEngine::handle_go(const std::vector<std::string>& tokens, std::ostream& output)
 {
-    Search search;
     SearchLimits limits = parse_search_limits(tokens, board_.side_to_move());
 
     const auto start = std::chrono::steady_clock::now();
@@ -217,7 +253,7 @@ void UciEngine::handle_go(const std::vector<std::string>& tokens, std::ostream& 
         output.flush();
     };
 
-    SearchResult result = search.find_best_move(board_, limits);
+    SearchResult result = search_.find_best_move(board_, limits);
     if (result.depth == 0) {
         write_search_info(output, result, start);
     }

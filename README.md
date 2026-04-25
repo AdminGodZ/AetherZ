@@ -32,6 +32,7 @@ ctest --test-dir build --output-on-failure
 ## UCI Examples
 
 ```text
+setoption name Hash value 128
 go depth 5
 go movetime 1000
 go wtime 60000 btime 60000 winc 1000 binc 1000
