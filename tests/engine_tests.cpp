@@ -47,6 +47,21 @@ void test_make_and_unmake_restores_state_exactly()
     }
 }
 
+void test_null_move_restores_state_exactly()
+{
+    auto board = aetherz::Board::startpos();
+    const auto before_fen = board.to_fen();
+    const auto before_hash = board.hash();
+
+    aetherz::Board::UndoState undo;
+    require(board.make_null_move(undo), "null move can be made outside check");
+    require(board.side_to_move() == aetherz::Color::Black, "null move toggles side to move");
+    board.unmake_move(undo);
+
+    require(board.to_fen() == before_fen, "null unmake restores FEN");
+    require(board.hash() == before_hash, "null unmake restores hash");
+}
+
 void test_start_position_perft()
 {
     auto board = aetherz::Board::startpos();
@@ -93,6 +108,7 @@ void test_iterative_search_returns_a_move()
 
     require(result.best_move.has_value(), "iterative search finds a move");
     require(result.depth == 3, "iterative search reaches requested fixed depth");
+    require(result.principal_variation.size() >= 2, "iterative search reports multi-move PV");
     require(completed_depths == 3, "iterative search reports each completed depth");
 }
 
@@ -151,6 +167,49 @@ void test_piece_square_tables_reward_active_knight()
     require(aetherz::evaluate_white(*central) > aetherz::evaluate_white(*corner), "PST rewards active knight placement");
 }
 
+void test_search_finds_mate_in_one()
+{
+    auto board = aetherz::Board::from_fen("7k/8/5KQ1/8/8/8/8/8 w - - 0 1");
+
+    require(board.has_value(), "mate-in-one FEN parses");
+
+    aetherz::Search search;
+    const auto result = search.find_best_move(*board, 2);
+
+    require(result.best_move.has_value(), "mate-in-one search finds a move");
+    require(result.score > 29000, "mate-in-one score is near mate score");
+}
+
+void test_search_scores_fifty_move_draw()
+{
+    auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 99 50");
+
+    require(board.has_value(), "fifty-move draw test FEN parses");
+
+    aetherz::Search search;
+    const auto result = search.find_best_move(*board, 1);
+
+    require(result.best_move.has_value(), "fifty-move search still returns a move");
+    require(result.score == 0, "quiet move reaching fifty-move limit scores as draw");
+}
+
+void test_search_scores_repetition_draw()
+{
+    auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
+
+    require(board.has_value(), "repetition draw test FEN parses");
+
+    aetherz::Search search;
+    aetherz::SearchLimits limits;
+    limits.max_depth = 2;
+    limits.position_history = {board->hash(), board->hash(), board->hash()};
+
+    const auto result = search.find_best_move(*board, limits);
+
+    require(result.best_move.has_value(), "repetition search still returns a move");
+    require(result.score == 0, "threefold repetition scores as draw");
+}
+
 void test_uci_go_time_controls()
 {
     std::istringstream input{
@@ -180,6 +239,7 @@ int main()
 {
     test_start_position_fen_round_trips();
     test_make_and_unmake_restores_state_exactly();
+    test_null_move_restores_state_exactly();
     test_start_position_perft();
     test_kiwipete_perft();
     test_uci_move_text_parses_promotions();
@@ -189,6 +249,9 @@ int main()
     test_evaluation_is_balanced_at_start();
     test_evaluation_rewards_material();
     test_piece_square_tables_reward_active_knight();
+    test_search_finds_mate_in_one();
+    test_search_scores_fifty_move_draw();
+    test_search_scores_repetition_draw();
     test_uci_go_time_controls();
 
     std::cout << "engine tests passed\n";

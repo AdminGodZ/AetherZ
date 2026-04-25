@@ -781,6 +781,33 @@ bool Board::make_move(const Move& move, UndoState& undo)
     return true;
 }
 
+bool Board::make_null_move(UndoState& undo)
+{
+    if (in_check(side_to_move_)) {
+        return false;
+    }
+
+    undo = UndoState{
+        .pieces = pieces_,
+        .side_to_move = side_to_move_,
+        .castling_rights = castling_rights_,
+        .en_passant_square = en_passant_square_,
+        .halfmove_clock = halfmove_clock_,
+        .fullmove_number = fullmove_number_,
+        .hash = hash_,
+    };
+
+    if (side_to_move_ == Color::Black) {
+        ++fullmove_number_;
+    }
+
+    side_to_move_ = opposite(side_to_move_);
+    en_passant_square_ = -1;
+    ++halfmove_clock_;
+    refresh_hash();
+    return true;
+}
+
 void Board::unmake_move(const UndoState& undo)
 {
     pieces_ = undo.pieces;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <limits>
@@ -14,6 +15,7 @@ namespace {
 
 constexpr int infinity = 32000;
 constexpr int mate_score = 30000;
+constexpr int initial_aspiration_window = 35;
 
 bool is_tactical(const Move& move)
 {
@@ -151,6 +153,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     stop_ = false;
     deadline_.reset();
     clear_killers();
+    reset_position_history(board, limits);
 
     if (limits.move_time) {
         deadline_ = std::chrono::steady_clock::now() + *limits.move_time;
@@ -172,21 +175,46 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     best_completed.best_move = moves.front();
     best_completed.principal_variation.push_back(moves.front());
     const int max_depth = std::max(1, limits.max_depth);
+    int previous_score = 0;
 
     for (int depth = 1; depth <= max_depth; ++depth) {
         if (should_stop(true)) {
             break;
         }
 
-        SearchResult iteration = search_depth(board, depth);
-        iteration.nodes = nodes_;
-        iteration.tt_hits = tt_hits_;
+        int alpha = -infinity;
+        int beta = infinity;
+        if (depth > 1) {
+            alpha = previous_score - initial_aspiration_window;
+            beta = previous_score + initial_aspiration_window;
+        }
+
+        SearchResult iteration;
+        int window = initial_aspiration_window;
+        while (true) {
+            iteration = search_depth(board, depth, alpha, beta);
+            iteration.nodes = nodes_;
+            iteration.tt_hits = tt_hits_;
+
+            if (stop_ || depth == 1 || (iteration.score > alpha && iteration.score < beta)) {
+                break;
+            }
+
+            if (iteration.score <= alpha) {
+                alpha = std::max(-infinity, previous_score - window * 2);
+            } else if (iteration.score >= beta) {
+                beta = std::min(infinity, previous_score + window * 2);
+            }
+
+            window *= 2;
+        }
 
         if (stop_ && depth > 1) {
             break;
         }
 
         if (iteration.best_move) {
+            previous_score = iteration.score;
             best_completed = iteration;
             if (limits.on_depth_finished) {
                 limits.on_depth_finished(best_completed);
@@ -218,7 +246,7 @@ std::size_t Search::hash_size_mb() const
     return table_.size_mb();
 }
 
-SearchResult Search::search_depth(Board& board, int depth)
+SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 {
     SearchResult result;
     result.depth = depth;
@@ -231,22 +259,44 @@ SearchResult Search::search_depth(Board& board, int depth)
         return result;
     }
 
-    int best_score = -infinity;
-    int alpha = -infinity;
-    const int beta = infinity;
+    if (is_draw(board)) {
+        result.best_move = moves.front();
+        result.score = 0;
+        result.nodes = nodes_;
+        result.tt_hits = tt_hits_;
+        result.principal_variation.push_back(moves.front());
+        return result;
+    }
 
-    for (const Move& move : moves) {
+    int best_score = -infinity;
+    const int original_alpha = alpha;
+    const int original_beta = beta;
+    bool searched_move = false;
+
+    for (std::size_t index = 0; index < moves.size(); ++index) {
         if (should_stop(true)) {
             break;
         }
 
+        const Move& move = moves[index];
         Board::UndoState undo;
         if (!board.make_move(move, undo)) {
             continue;
         }
+        push_position(board);
 
-        const int score = -negamax(board, depth - 1, 1, -beta, -alpha);
+        int score = 0;
+        if (!searched_move) {
+            score = -negamax(board, depth - 1, 1, -beta, -alpha);
+        } else {
+            score = -negamax(board, depth - 1, 1, -alpha - 1, -alpha);
+            if (!stop_ && score > alpha && score < beta) {
+                score = -negamax(board, depth - 1, 1, -beta, -alpha);
+            }
+        }
+        pop_position();
         board.unmake_move(undo);
+        searched_move = true;
 
         if (!result.best_move || score > best_score) {
             best_score = score;
@@ -255,21 +305,69 @@ SearchResult Search::search_depth(Board& board, int depth)
         }
 
         alpha = std::max(alpha, score);
+        if (alpha >= beta) {
+            record_cutoff(move, depth, 0);
+            break;
+        }
     }
 
     result.nodes = nodes_;
     result.tt_hits = tt_hits_;
     if (result.best_move) {
-        result.principal_variation.push_back(*result.best_move);
-        table_.store(board.hash(), depth, score_to_table(result.score, 0), Bound::Exact, *result.best_move);
+        Bound bound = Bound::Exact;
+        if (best_score <= original_alpha) {
+            bound = Bound::Upper;
+        } else if (best_score >= original_beta) {
+            bound = Bound::Lower;
+        }
+
+        table_.store(board.hash(), depth, score_to_table(result.score, 0), bound, *result.best_move);
+        result.principal_variation = principal_variation(board, depth);
     }
     return result;
+}
+
+std::vector<Move> Search::principal_variation(Board board, int depth) const
+{
+    std::vector<Move> line;
+    line.reserve(static_cast<std::size_t>(std::max(0, depth)));
+
+    for (int remaining = depth; remaining > 0; --remaining) {
+        const auto entry = table_.probe(board.hash());
+        if (!entry || !entry->best_move.is_valid()) {
+            break;
+        }
+
+        bool made_move = false;
+        for (const Move& legal_move : board.generate_legal_moves()) {
+            if (!same_move(legal_move, entry->best_move)) {
+                continue;
+            }
+
+            Board::UndoState undo;
+            if (!board.make_move(legal_move, undo)) {
+                return line;
+            }
+            line.push_back(legal_move);
+            made_move = true;
+            break;
+        }
+
+        if (!made_move) {
+            break;
+        }
+    }
+
+    return line;
 }
 
 int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
 {
     ++nodes_;
     if (should_stop()) {
+        return 0;
+    }
+    if (is_draw(board)) {
         return 0;
     }
 
@@ -279,6 +377,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
 
     const int original_alpha = alpha;
     const int original_beta = beta;
+    const bool in_check = board.in_check(board.side_to_move());
     std::optional<Move> tt_move;
     if (const auto entry = table_.probe(board.hash())) {
         tt_move = entry->best_move;
@@ -299,9 +398,22 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
         }
     }
 
+    if (can_try_null_move(board, depth, ply, alpha, beta)) {
+        Board::UndoState undo;
+        if (board.make_null_move(undo)) {
+            const int reduction = 2 + depth / 4;
+            const int score = -negamax(board, depth - 1 - reduction, ply + 1, -beta, -beta + 1);
+            board.unmake_move(undo);
+
+            if (score >= beta) {
+                return beta;
+            }
+        }
+    }
+
     const auto moves = ordered_moves(board, tt_move, ply);
     if (moves.empty()) {
-        if (board.in_check(board.side_to_move())) {
+        if (in_check) {
             return -mate_score + ply;
         }
         return 0;
@@ -309,6 +421,8 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
 
     int best = -infinity;
     Move best_move;
+    bool searched_move = false;
+    int searched_moves = 0;
     for (const Move& move : moves) {
         if (should_stop()) {
             break;
@@ -318,9 +432,27 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
         if (!board.make_move(move, undo)) {
             continue;
         }
+        push_position(board);
 
-        const int score = -negamax(board, depth - 1, ply + 1, -beta, -alpha);
+        ++searched_moves;
+        const bool reduce = searched_move && can_reduce_late_move(move, depth, ply, searched_moves, in_check);
+        const int child_depth = depth - 1 - (reduce ? 1 : 0);
+
+        int score = 0;
+        if (!searched_move) {
+            score = -negamax(board, child_depth, ply + 1, -beta, -alpha);
+        } else {
+            score = -negamax(board, child_depth, ply + 1, -alpha - 1, -alpha);
+            if (reduce && !stop_ && score > alpha) {
+                score = -negamax(board, depth - 1, ply + 1, -alpha - 1, -alpha);
+            }
+            if (!stop_ && score > alpha && score < beta) {
+                score = -negamax(board, depth - 1, ply + 1, -beta, -alpha);
+            }
+        }
+        pop_position();
         board.unmake_move(undo);
+        searched_move = true;
 
         if (score > best) {
             best = score;
@@ -333,7 +465,11 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
         }
     }
 
-    if (!stop_) {
+    if (!searched_move) {
+        return 0;
+    }
+
+    if (!stop_ && best_move.is_valid()) {
         Bound bound = Bound::Exact;
         if (best <= original_alpha) {
             bound = Bound::Upper;
@@ -351,6 +487,9 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
 {
     ++nodes_;
     if (should_stop()) {
+        return 0;
+    }
+    if (is_draw(board)) {
         return 0;
     }
 
@@ -373,8 +512,10 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
         if (!board.make_move(move, undo)) {
             continue;
         }
+        push_position(board);
 
         const int score = -quiescence(board, ply + 1, -beta, -alpha);
+        pop_position();
         board.unmake_move(undo);
 
         if (score >= beta) {
@@ -445,6 +586,79 @@ bool Search::should_stop(bool force_check)
 
     stop_ = std::chrono::steady_clock::now() >= *deadline_;
     return stop_;
+}
+
+bool Search::can_try_null_move(const Board& board, int depth, int ply, int alpha, int beta) const
+{
+    if (depth < 3 || ply <= 0) {
+        return false;
+    }
+    if (beta != alpha + 1) {
+        return false;
+    }
+    if (board.in_check(board.side_to_move())) {
+        return false;
+    }
+    if (beta >= mate_score - 1000 || beta <= -mate_score + 1000) {
+        return false;
+    }
+    if (board.halfmove_clock() >= 99) {
+        return false;
+    }
+    return has_non_pawn_material(board, board.side_to_move());
+}
+
+bool Search::has_non_pawn_material(const Board& board, Color color) const
+{
+    return (board.pieces(color, PieceType::Knight)
+        | board.pieces(color, PieceType::Bishop)
+        | board.pieces(color, PieceType::Rook)
+        | board.pieces(color, PieceType::Queen))
+        != 0;
+}
+
+bool Search::can_reduce_late_move(const Move& move, int depth, int ply, int move_index, bool in_check) const
+{
+    if (depth < 3 || ply <= 0 || in_check || move_index < 4) {
+        return false;
+    }
+    if (move.flag != MoveFlag::Quiet) {
+        return false;
+    }
+    if (ply < max_ply && (same_move(move, killer_moves_[ply][0]) || same_move(move, killer_moves_[ply][1]))) {
+        return false;
+    }
+    return true;
+}
+
+bool Search::is_draw(const Board& board) const
+{
+    return board.halfmove_clock() >= 100 || repetition_count(board.hash()) >= 3;
+}
+
+int Search::repetition_count(std::uint64_t hash) const
+{
+    return static_cast<int>(std::count(position_history_.begin(), position_history_.end(), hash));
+}
+
+void Search::reset_position_history(const Board& board, const SearchLimits& limits)
+{
+    position_history_ = limits.position_history;
+    if (position_history_.empty() || position_history_.back() != board.hash()) {
+        position_history_.push_back(board.hash());
+    }
+}
+
+void Search::push_position(const Board& board)
+{
+    position_history_.push_back(board.hash());
+}
+
+void Search::pop_position()
+{
+    if (!position_history_.empty()) {
+        position_history_.pop_back();
+    }
 }
 
 void Search::clear_killers()
