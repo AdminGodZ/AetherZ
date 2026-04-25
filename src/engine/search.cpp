@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <limits>
 #include <sstream>
 
@@ -33,7 +34,63 @@ bool is_tactical(const Move& move)
 
 SearchResult Search::find_best_move(Board& board, int depth)
 {
+    SearchLimits limits;
+    limits.max_depth = depth;
+    return find_best_move(board, limits);
+}
+
+SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
+{
     nodes_ = 0;
+    stop_ = false;
+    deadline_.reset();
+
+    if (limits.move_time) {
+        deadline_ = std::chrono::steady_clock::now() + *limits.move_time;
+    }
+
+    const auto moves = ordered_moves(board);
+    if (moves.empty()) {
+        SearchResult result;
+        result.nodes = nodes_;
+        return result;
+    }
+
+    SearchResult best_completed;
+    best_completed.best_move = moves.front();
+    best_completed.principal_variation.push_back(moves.front());
+    const int max_depth = std::max(1, limits.max_depth);
+
+    for (int depth = 1; depth <= max_depth; ++depth) {
+        if (should_stop(true)) {
+            break;
+        }
+
+        SearchResult iteration = search_depth(board, depth);
+        iteration.nodes = nodes_;
+
+        if (stop_ && depth > 1) {
+            break;
+        }
+
+        if (iteration.best_move) {
+            best_completed = iteration;
+            if (limits.on_depth_finished) {
+                limits.on_depth_finished(best_completed);
+            }
+        }
+
+        if (should_stop(true)) {
+            break;
+        }
+    }
+
+    best_completed.nodes = nodes_;
+    return best_completed;
+}
+
+SearchResult Search::search_depth(Board& board, int depth)
+{
     SearchResult result;
     result.depth = depth;
 
@@ -48,6 +105,10 @@ SearchResult Search::find_best_move(Board& board, int depth)
     const int beta = infinity;
 
     for (const Move& move : moves) {
+        if (should_stop(true)) {
+            break;
+        }
+
         Board::UndoState undo;
         if (!board.make_move(move, undo)) {
             continue;
@@ -75,6 +136,9 @@ SearchResult Search::find_best_move(Board& board, int depth)
 int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
 {
     ++nodes_;
+    if (should_stop()) {
+        return 0;
+    }
 
     if (depth <= 0) {
         return quiescence(board, ply, alpha, beta);
@@ -90,6 +154,10 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
 
     int best = -infinity;
     for (const Move& move : moves) {
+        if (should_stop()) {
+            break;
+        }
+
         Board::UndoState undo;
         if (!board.make_move(move, undo)) {
             continue;
@@ -111,6 +179,9 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
 int Search::quiescence(Board& board, int ply, int alpha, int beta)
 {
     ++nodes_;
+    if (should_stop()) {
+        return 0;
+    }
 
     const int stand_pat = evaluate(board);
     if (stand_pat >= beta) {
@@ -119,6 +190,10 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
     alpha = std::max(alpha, stand_pat);
 
     for (const Move& move : ordered_moves(board)) {
+        if (should_stop()) {
+            break;
+        }
+
         if (!is_tactical(move)) {
             continue;
         }
@@ -162,6 +237,24 @@ std::vector<Move> Search::ordered_moves(const Board& board) const
         return is_tactical(left) && !is_tactical(right);
     });
     return moves;
+}
+
+bool Search::should_stop(bool force_check)
+{
+    if (stop_) {
+        return true;
+    }
+
+    if (!deadline_) {
+        return false;
+    }
+
+    if (!force_check && (nodes_ & 2047ULL) != 0) {
+        return false;
+    }
+
+    stop_ = std::chrono::steady_clock::now() >= *deadline_;
+    return stop_;
 }
 
 std::string pv_to_string(const std::vector<Move>& moves)

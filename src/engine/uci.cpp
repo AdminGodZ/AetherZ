@@ -3,10 +3,11 @@
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 
-#include <chrono>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <sstream>
 
 namespace aetherz {
@@ -35,18 +36,97 @@ std::string join_words(const std::vector<std::string>& words, std::size_t begin,
     return result.str();
 }
 
-int parse_depth(const std::vector<std::string>& tokens, int fallback)
+std::optional<int> parse_int_after(const std::vector<std::string>& tokens, std::string_view name)
 {
     for (std::size_t index = 0; index + 1 < tokens.size(); ++index) {
-        if (tokens[index] == "depth") {
-            try {
-                return std::max(1, std::stoi(tokens[index + 1]));
-            } catch (...) {
-                return fallback;
-            }
+        if (tokens[index] != name) {
+            continue;
+        }
+
+        try {
+            return std::stoi(tokens[index + 1]);
+        } catch (...) {
+            return std::nullopt;
         }
     }
-    return fallback;
+
+    return std::nullopt;
+}
+
+std::chrono::milliseconds safe_move_time(int milliseconds)
+{
+    constexpr int move_overhead_ms = 10;
+    return std::chrono::milliseconds{std::max(1, milliseconds - move_overhead_ms)};
+}
+
+SearchLimits parse_search_limits(const std::vector<std::string>& tokens, Color side_to_move)
+{
+    constexpr int default_depth = 4;
+    constexpr int timed_max_depth = 64;
+    constexpr int default_moves_to_go = 30;
+
+    SearchLimits limits;
+
+    const auto depth = parse_int_after(tokens, "depth");
+    const auto move_time = parse_int_after(tokens, "movetime");
+    const auto white_time = parse_int_after(tokens, "wtime");
+    const auto black_time = parse_int_after(tokens, "btime");
+    const auto white_increment = parse_int_after(tokens, "winc").value_or(0);
+    const auto black_increment = parse_int_after(tokens, "binc").value_or(0);
+    const auto moves_to_go = std::max(1, parse_int_after(tokens, "movestogo").value_or(default_moves_to_go));
+
+    if (depth) {
+        limits.max_depth = std::max(1, *depth);
+    } else if (move_time || white_time || black_time) {
+        limits.max_depth = timed_max_depth;
+    } else {
+        limits.max_depth = default_depth;
+    }
+
+    if (move_time) {
+        limits.move_time = safe_move_time(*move_time);
+        return limits;
+    }
+
+    const auto remaining_time = side_to_move == Color::White ? white_time : black_time;
+    const int increment = side_to_move == Color::White ? white_increment : black_increment;
+    if (!remaining_time || *remaining_time <= 0) {
+        return limits;
+    }
+
+    const int base = *remaining_time / moves_to_go;
+    const int increment_bonus = increment * 3 / 4;
+    const int cap = std::max(1, *remaining_time / 4);
+    limits.move_time = safe_move_time(std::min(base + increment_bonus, cap));
+    return limits;
+}
+
+std::int64_t elapsed_milliseconds(std::chrono::steady_clock::time_point start)
+{
+    return std::max<std::int64_t>(
+        1,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count());
+}
+
+void write_search_info(
+    std::ostream& output,
+    const SearchResult& result,
+    std::chrono::steady_clock::time_point start)
+{
+    const auto elapsed_ms = elapsed_milliseconds(start);
+    output << "info depth " << result.depth
+           << " score cp " << result.score
+           << " nodes " << result.nodes
+           << " time " << elapsed_ms
+           << " nps " << (result.nodes * 1000 / elapsed_ms);
+
+    if (!result.principal_variation.empty()) {
+        output << " pv " << pv_to_string(result.principal_variation);
+    }
+
+    output << '\n';
 }
 
 } // namespace
@@ -128,27 +208,20 @@ void UciEngine::handle_position(const std::vector<std::string>& tokens)
 
 void UciEngine::handle_go(const std::vector<std::string>& tokens, std::ostream& output)
 {
-    const int depth = parse_depth(tokens, 4);
     Search search;
+    SearchLimits limits = parse_search_limits(tokens, board_.side_to_move());
 
     const auto start = std::chrono::steady_clock::now();
-    SearchResult result = search.find_best_move(board_, depth);
-    const auto elapsed = std::chrono::steady_clock::now() - start;
-    const auto elapsed_ms = std::max<std::int64_t>(
-        1,
-        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+    limits.on_depth_finished = [&](const SearchResult& info) {
+        write_search_info(output, info, start);
+        output.flush();
+    };
 
-    output << "info depth " << result.depth
-           << " score cp " << result.score
-           << " nodes " << result.nodes
-           << " time " << elapsed_ms
-           << " nps " << (result.nodes * 1000 / elapsed_ms);
-
-    if (!result.principal_variation.empty()) {
-        output << " pv " << pv_to_string(result.principal_variation);
+    SearchResult result = search.find_best_move(board_, limits);
+    if (result.depth == 0) {
+        write_search_info(output, result, start);
     }
 
-    output << '\n';
     output << "bestmove " << (result.best_move ? move_to_uci(*result.best_move) : "0000") << '\n';
 }
 

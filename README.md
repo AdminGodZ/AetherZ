@@ -28,3 +28,11 @@ ctest --test-dir build --output-on-failure
 ./build/aetherz divide 2
 ./build/aetherz bench
 ```
+
+## UCI Examples
+
+```text
+go depth 5
+go movetime 1000
+go wtime 60000 btime 60000 winc 1000 binc 1000
+```

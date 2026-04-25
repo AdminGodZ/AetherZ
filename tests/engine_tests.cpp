@@ -1,9 +1,13 @@
 #include "engine/board.hpp"
 #include "engine/perft.hpp"
+#include "engine/search.hpp"
 #include "engine/types.hpp"
+#include "engine/uci.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <string_view>
 
 namespace {
@@ -72,6 +76,61 @@ void test_uci_move_text_parses_promotions()
     require(aetherz::move_to_uci(*move) == "a7a8q", "promotion UCI round-trip");
 }
 
+void test_iterative_search_returns_a_move()
+{
+    auto board = aetherz::Board::startpos();
+    aetherz::Search search;
+    int completed_depths = 0;
+
+    aetherz::SearchLimits limits;
+    limits.max_depth = 3;
+    limits.on_depth_finished = [&](const aetherz::SearchResult&) {
+        ++completed_depths;
+    };
+
+    const auto result = search.find_best_move(board, limits);
+
+    require(result.best_move.has_value(), "iterative search finds a move");
+    require(result.depth == 3, "iterative search reaches requested fixed depth");
+    require(completed_depths == 3, "iterative search reports each completed depth");
+}
+
+void test_time_limited_search_returns_a_move()
+{
+    auto board = aetherz::Board::startpos();
+    aetherz::Search search;
+
+    aetherz::SearchLimits limits;
+    limits.max_depth = 64;
+    limits.move_time = std::chrono::milliseconds{25};
+
+    const auto result = search.find_best_move(board, limits);
+
+    require(result.best_move.has_value(), "time-limited search finds a move");
+    require(result.nodes > 0, "time-limited search visits nodes");
+}
+
+void test_uci_go_time_controls()
+{
+    std::istringstream input{
+        "uci\n"
+        "isready\n"
+        "position startpos moves e2e4 e7e5\n"
+        "go movetime 25\n"
+        "go wtime 1000 btime 1000 winc 0 binc 0 movestogo 20\n"
+        "quit\n"};
+    std::ostringstream output;
+
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+
+    const std::string text = output.str();
+    require(text.find("uciok") != std::string::npos, "UCI handshake succeeds");
+    require(text.find("readyok") != std::string::npos, "UCI readiness succeeds");
+    require(text.find("info depth") != std::string::npos, "UCI search reports iterative depth info");
+    require(text.find("bestmove ") != std::string::npos, "UCI time-control search returns bestmove");
+}
+
 } // namespace
 
 int main()
@@ -81,6 +140,9 @@ int main()
     test_start_position_perft();
     test_kiwipete_perft();
     test_uci_move_text_parses_promotions();
+    test_iterative_search_returns_a_move();
+    test_time_limited_search_returns_a_move();
+    test_uci_go_time_controls();
 
     std::cout << "engine tests passed\n";
     return 0;
