@@ -55,6 +55,7 @@ public:
     [[nodiscard]] std::vector<Move> generate_legal_moves() const;
 
     [[nodiscard]] bool make_move(const Move& move, UndoState& undo);
+    [[nodiscard]] bool make_null_move(UndoState& undo);
     void unmake_move(const UndoState& undo);
 
 private:

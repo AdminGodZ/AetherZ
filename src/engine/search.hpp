@@ -25,6 +25,7 @@ struct SearchResult {
 struct SearchLimits {
     int max_depth = 4;
     std::optional<std::chrono::milliseconds> move_time;
+    std::vector<std::uint64_t> position_history;
     std::function<void(const SearchResult&)> on_depth_finished;
 };
 
@@ -76,13 +77,23 @@ private:
     std::optional<std::chrono::steady_clock::time_point> deadline_;
     std::array<std::array<Move, 2>, max_ply> killer_moves_{};
     std::array<std::array<int, 64>, 64> history_{};
+    std::vector<std::uint64_t> position_history_;
 
-    [[nodiscard]] SearchResult search_depth(Board& board, int depth);
+    [[nodiscard]] SearchResult search_depth(Board& board, int depth, int alpha, int beta);
+    [[nodiscard]] std::vector<Move> principal_variation(Board board, int depth) const;
     [[nodiscard]] int negamax(Board& board, int depth, int ply, int alpha, int beta);
     [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta);
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] std::vector<Move> ordered_moves(const Board& board, std::optional<Move> tt_move, int ply) const;
     [[nodiscard]] bool should_stop(bool force_check = false);
+    [[nodiscard]] bool can_try_null_move(const Board& board, int depth, int ply, int alpha, int beta) const;
+    [[nodiscard]] bool has_non_pawn_material(const Board& board, Color color) const;
+    [[nodiscard]] bool can_reduce_late_move(const Move& move, int depth, int ply, int move_index, bool in_check) const;
+    [[nodiscard]] bool is_draw(const Board& board) const;
+    [[nodiscard]] int repetition_count(std::uint64_t hash) const;
+    void reset_position_history(const Board& board, const SearchLimits& limits);
+    void push_position(const Board& board);
+    void pop_position();
     void clear_killers();
     void record_cutoff(const Move& move, int depth, int ply);
 };

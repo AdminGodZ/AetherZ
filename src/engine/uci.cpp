@@ -152,6 +152,7 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
             handle_setoption(tokens);
         } else if (command == "ucinewgame") {
             board_ = Board::startpos();
+            reset_position_history();
             search_.clear_hash();
         } else if (command == "position") {
             handle_position(tokens);
@@ -218,6 +219,7 @@ void UciEngine::handle_position(const std::vector<std::string>& tokens)
 
     if (tokens[1] == "startpos") {
         board_ = Board::startpos();
+        reset_position_history();
         move_index = 2;
     } else if (tokens[1] == "fen") {
         move_index = 2;
@@ -230,6 +232,7 @@ void UciEngine::handle_position(const std::vector<std::string>& tokens)
             return;
         }
         board_ = *parsed;
+        reset_position_history();
     }
 
     if (move_index < tokens.size() && tokens[move_index] == "moves") {
@@ -246,6 +249,7 @@ void UciEngine::handle_position(const std::vector<std::string>& tokens)
 void UciEngine::handle_go(const std::vector<std::string>& tokens, std::ostream& output)
 {
     SearchLimits limits = parse_search_limits(tokens, board_.side_to_move());
+    limits.position_history = position_history_;
 
     const auto start = std::chrono::steady_clock::now();
     limits.on_depth_finished = [&](const SearchResult& info) {
@@ -311,6 +315,17 @@ void UciEngine::handle_moves(std::ostream& output)
     }
 }
 
+void UciEngine::reset_position_history()
+{
+    position_history_.clear();
+    record_current_position();
+}
+
+void UciEngine::record_current_position()
+{
+    position_history_.push_back(board_.hash());
+}
+
 bool UciEngine::apply_uci_move(std::string_view move_text)
 {
     const auto requested = move_from_uci(move_text);
@@ -323,7 +338,11 @@ bool UciEngine::apply_uci_move(std::string_view move_text)
             && legal_move.to == requested->to
             && legal_move.promotion == requested->promotion) {
             Board::UndoState undo;
-            return board_.make_move(legal_move, undo);
+            if (!board_.make_move(legal_move, undo)) {
+                return false;
+            }
+            record_current_position();
+            return true;
         }
     }
 
