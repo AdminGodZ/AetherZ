@@ -1,5 +1,6 @@
 #include "engine/uci.hpp"
 
+#include "engine/benchmark.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 
@@ -166,6 +167,12 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
             handle_moves(output);
         } else if (command == "bench") {
             run_bench_command(output);
+        } else if (command == "searchbench") {
+            run_search_bench_command(tokens, output, output);
+        } else if (command == "tactics") {
+            run_tactics_command(tokens, output, output);
+        } else if (command == "selfplay") {
+            run_selfplay_command(tokens, output, output);
         } else if (command == "quit") {
             break;
         } else if (command == "stop") {
@@ -418,43 +425,6 @@ int run_divide_command(const std::vector<std::string>& args, std::ostream& outpu
         output << move_to_uci(line.move) << ": " << line.nodes << '\n';
     }
     output << "nodes " << total << '\n';
-    return 0;
-}
-
-int run_bench_command(std::ostream& output)
-{
-    struct BenchPosition {
-        std::string_view fen;
-        int depth;
-    };
-
-    const std::vector<BenchPosition> positions{
-        {Board::start_fen, 4},
-        {"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3},
-        {"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4},
-    };
-
-    std::uint64_t total_nodes = 0;
-    const auto start = std::chrono::steady_clock::now();
-
-    for (const auto& position : positions) {
-        auto board = Board::from_fen(position.fen);
-        if (!board) {
-            continue;
-        }
-        const auto nodes = perft(*board, position.depth);
-        total_nodes += nodes;
-        output << "bench depth " << position.depth << " nodes " << nodes << '\n';
-    }
-
-    const auto elapsed = std::chrono::steady_clock::now() - start;
-    const auto elapsed_ms = std::max<std::int64_t>(
-        1,
-        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
-
-    output << "bench total nodes " << total_nodes
-           << " time " << elapsed_ms
-           << " nps " << (total_nodes * 1000 / elapsed_ms) << '\n';
     return 0;
 }
 
