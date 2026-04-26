@@ -254,6 +254,26 @@ void test_evaluation_rewards_rook_open_file()
     require(aetherz::evaluate_white(*open_file) > aetherz::evaluate_white(*closed_file), "evaluation rewards open rook file");
 }
 
+void test_evaluation_prefers_castling_to_king_walk()
+{
+    const auto board = aetherz::Board::from_fen(
+        "r3k2r/ppp2ppp/2n1pn2/3p4/3P4/2N1PN2/PPP2PPP/R3K2R w KQkq - 0 1");
+
+    require(board.has_value(), "castling eval FEN parses");
+
+    auto castled = *board;
+    auto king_walk = *board;
+    const auto castle_move = require_legal_move(castled, "e1g1");
+    const auto walk_move = require_legal_move(king_walk, "e1d2");
+
+    aetherz::Board::UndoState castle_undo;
+    aetherz::Board::UndoState walk_undo;
+    require(castled.make_move(castle_move, castle_undo), "castle move can be made");
+    require(king_walk.make_move(walk_move, walk_undo), "king walk move can be made");
+
+    require(aetherz::evaluate_white(castled) > aetherz::evaluate_white(king_walk), "evaluation prefers castling to king walk");
+}
+
 void test_static_exchange_evaluation_scores_winning_capture()
 {
     const auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/4r3/4Q1K1 w - - 0 1");
@@ -287,6 +307,21 @@ void test_search_finds_mate_in_one()
 
     require(result.best_move.has_value(), "mate-in-one search finds a move");
     require(result.score > 29000, "mate-in-one score is near mate score");
+}
+
+void test_search_prefers_castling_over_king_walk()
+{
+    auto board = aetherz::Board::from_fen(
+        "r3k2r/ppp2ppp/2n1pn2/3p4/3P4/2N1PN2/PPP2PPP/R3K2R w KQkq - 0 1");
+
+    require(board.has_value(), "castling search FEN parses");
+
+    aetherz::Search search;
+    const auto result = search.find_best_move(*board, 2);
+
+    require(result.best_move.has_value(), "castling search finds a move");
+    const std::string best = aetherz::move_to_uci(*result.best_move);
+    require(best == "e1g1" || best == "e1c1", "search castles instead of walking the king");
 }
 
 void test_search_scores_root_checkmate()
@@ -415,9 +450,11 @@ int main()
     test_evaluation_rewards_bishop_pair();
     test_evaluation_rewards_passed_pawn();
     test_evaluation_rewards_rook_open_file();
+    test_evaluation_prefers_castling_to_king_walk();
     test_static_exchange_evaluation_scores_winning_capture();
     test_static_exchange_evaluation_scores_losing_capture();
     test_search_finds_mate_in_one();
+    test_search_prefers_castling_over_king_walk();
     test_search_scores_root_checkmate();
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();

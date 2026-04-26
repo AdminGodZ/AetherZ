@@ -648,6 +648,9 @@ std::vector<Move> Search::ordered_moves(
             if (move.flag == MoveFlag::Promotion || move.flag == MoveFlag::PromotionCapture) {
                 score += 900'000 + promotion_score(move.promotion);
             }
+            if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {
+                score += 750'000;
+            }
             if (is_capture_like(move)) {
                 const int see = static_exchange_evaluation(board, move);
                 score += (see >= 0 ? 800'000 : 100'000) + see * 8 + capture_score(board, move);

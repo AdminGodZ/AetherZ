@@ -418,6 +418,45 @@ EvalScore evaluate_king_safety(const Board& board, Color color)
     return score;
 }
 
+EvalScore evaluate_castling(const Board& board, Color color)
+{
+    EvalScore score;
+    const int king = board.king_square(color);
+    if (!is_valid_square(king)) {
+        return score;
+    }
+
+    const bool castled = color == Color::White
+        ? (king == 6 || king == 2)
+        : (king == 62 || king == 58);
+    const int start_square = color == Color::White ? 4 : 60;
+    const bool has_castling_rights = board.can_castle(color, true) || board.can_castle(color, false);
+
+    if (castled) {
+        score.add(110, 15);
+        return score;
+    }
+
+    if (king == start_square) {
+        score.add(has_castling_rights ? 20 : -35, 0);
+        return score;
+    }
+
+    const int file = file_of(king);
+    const int home_rank = color == Color::White ? 0 : 7;
+    const int near_home_rank = color == Color::White ? 1 : 6;
+    const bool early_king_walk = rank_of(king) == home_rank || rank_of(king) == near_home_rank;
+
+    if (early_king_walk) {
+        score.add(-125, -10);
+    }
+    if (file >= 2 && file <= 5) {
+        score.add(-35, -5);
+    }
+
+    return score;
+}
+
 EvalScore evaluate_positional_terms(const Board& board, Color color)
 {
     EvalScore score;
@@ -428,6 +467,7 @@ EvalScore evaluate_positional_terms(const Board& board, Color color)
              evaluate_bishop_pair(board, color),
              evaluate_rooks(board, color),
              evaluate_king_safety(board, color),
+             evaluate_castling(board, color),
          }) {
         score.middlegame += term.middlegame;
         score.endgame += term.endgame;
