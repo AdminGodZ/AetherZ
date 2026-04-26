@@ -315,6 +315,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         }
 
         const Move& move = moves[index];
+        const int see_gain = is_capture_like(move) ? static_exchange_evaluation(board, move) : 0;
         Board::UndoState undo;
         if (!make_legal_move(board, move, undo)) {
             continue;
@@ -322,7 +323,8 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         const bool gives_check = board.in_check(board.side_to_move());
         push_position(board);
 
-        const int child_depth = std::max(0, depth - 1 + check_extension(move, depth, 0, gives_check));
+        const int extension = tactical_extension(move, depth, 0, gives_check, see_gain);
+        const int child_depth = std::max(0, depth - 1 + extension);
         int score = 0;
         if (!searched_move) {
             score = -negamax(board, child_depth, 1, -beta, -alpha);
@@ -417,7 +419,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
     }
 
     if (depth <= 0) {
-        return quiescence(board, ply, alpha, beta);
+        return quiescence(board, ply, alpha, beta, 1);
     }
 
     const int original_alpha = alpha;
@@ -490,6 +492,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
         }
 
         Board::UndoState undo;
+        const int see_gain = is_capture_like(move) ? static_exchange_evaluation(board, move) : 0;
         if (!make_legal_move(board, move, undo)) {
             continue;
         }
@@ -509,7 +512,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
         push_position(board);
 
         ++searched_moves;
-        const int extension = check_extension(move, depth, ply, gives_check);
+        const int extension = tactical_extension(move, depth, ply, gives_check, see_gain);
         const int full_depth = std::max(0, depth - 1 + extension);
         const int reduction = searched_move
             ? late_move_reduction(move, depth, ply, searched_moves, in_check, gives_check)
@@ -564,7 +567,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta)
     return best;
 }
 
-int Search::quiescence(Board& board, int ply, int alpha, int beta)
+int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth)
 {
     ++nodes_;
     if (should_stop()) {
@@ -584,7 +587,8 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
     }
 
     bool searched_move = false;
-    const MoveGeneration generation = in_check ? MoveGeneration::All : MoveGeneration::Tactical;
+    const bool include_quiet_checks = !in_check && quiet_check_depth > 0;
+    const MoveGeneration generation = in_check || include_quiet_checks ? MoveGeneration::All : MoveGeneration::Tactical;
     for (const Move& move : ordered_moves(board, std::nullopt, ply, generation)) {
         if (should_stop()) {
             break;
@@ -598,10 +602,16 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
         if (!make_legal_move(board, move, undo)) {
             continue;
         }
+        const bool gives_check = board.in_check(board.side_to_move());
+        if (!in_check && !is_tactical(move) && !gives_check) {
+            board.unmake_move(undo);
+            continue;
+        }
         push_position(board);
         searched_move = true;
 
-        const int score = -quiescence(board, ply + 1, -beta, -alpha);
+        const int next_quiet_check_depth = !in_check && !is_tactical(move) ? quiet_check_depth - 1 : 0;
+        const int score = -quiescence(board, ply + 1, -beta, -alpha, next_quiet_check_depth);
         pop_position();
         board.unmake_move(undo);
 
@@ -759,15 +769,23 @@ bool Search::has_non_pawn_material(const Board& board, Color color) const
         != 0;
 }
 
-int Search::check_extension(const Move& move, int depth, int ply, bool gives_check) const
+int Search::tactical_extension(const Move& move, int depth, int ply, bool gives_check, int see_gain) const
 {
-    if (!gives_check || depth > 4 || ply >= max_ply - 1) {
+    if (ply >= max_ply - 1) {
         return 0;
     }
-    if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {
-        return 0;
+
+    if (gives_check && depth <= 4 && move.flag != MoveFlag::KingCastle && move.flag != MoveFlag::QueenCastle) {
+        return 1;
     }
-    return 1;
+    if (depth <= 3 && (move.flag == MoveFlag::Promotion || move.flag == MoveFlag::PromotionCapture)) {
+        return 1;
+    }
+    if (depth <= 1 && is_capture_like(move) && see_gain >= middlegame_piece_value(PieceType::Queen)) {
+        return 1;
+    }
+
+    return 0;
 }
 
 int Search::late_move_reduction(
@@ -848,7 +866,7 @@ void Search::record_cutoff(const Move& move, int depth, int ply)
     }
 
     if (move.from >= 0 && move.to >= 0) {
-        history_[move.from][move.to] += depth * depth;
+        history_[move.from][move.to] = std::clamp(history_[move.from][move.to] + depth * depth, -16'000, 16'000);
     }
 }
 

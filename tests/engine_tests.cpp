@@ -10,6 +10,7 @@
 #include "engine/uci.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -100,6 +101,31 @@ void test_kiwipete_perft()
     require(board.has_value(), "kiwipete FEN parses");
     require(aetherz::perft(*board, 1) == 48, "kiwipete perft depth 1");
     require(aetherz::perft(*board, 2) == 2039, "kiwipete perft depth 2");
+}
+
+void test_reference_perft_positions()
+{
+    struct PerftCase {
+        std::string_view name;
+        std::string_view fen;
+        int depth;
+        std::uint64_t expected;
+    };
+
+    const PerftCase cases[]{
+        {"startpos-d4", aetherz::Board::start_fen, 4, 197281},
+        {"kiwipete-d3", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3, 97862},
+        {"rook-pawn-endgame-d4", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4, 43238},
+        {"promotion-castling-d4", "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 4, 422333},
+        {"promotion-check-d3", "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 3, 62379},
+        {"middlegame-castled-d3", "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 3, 89890},
+    };
+
+    for (const PerftCase& entry : cases) {
+        auto board = aetherz::Board::from_fen(entry.fen);
+        require(board.has_value(), "reference perft FEN parses");
+        require(aetherz::perft(*board, entry.depth) == entry.expected, entry.name);
+    }
 }
 
 void test_uci_move_text_parses_promotions()
@@ -282,6 +308,16 @@ void test_evaluation_rewards_rook_open_file()
     require(open_file.has_value(), "open rook file FEN parses");
     require(closed_file.has_value(), "closed rook file FEN parses");
     require(aetherz::evaluate_white(*open_file) > aetherz::evaluate_white(*closed_file), "evaluation rewards open rook file");
+}
+
+void test_evaluation_rewards_supported_outpost()
+{
+    const auto supported = aetherz::Board::from_fen("4k3/7p/p7/3N4/2P1P3/8/8/4K3 w - - 0 1");
+    const auto contested = aetherz::Board::from_fen("4k3/7p/4p3/3N4/2P1P3/8/8/4K3 w - - 0 1");
+
+    require(supported.has_value(), "supported outpost FEN parses");
+    require(contested.has_value(), "contested outpost FEN parses");
+    require(aetherz::evaluate_white(*supported) > aetherz::evaluate_white(*contested), "evaluation rewards supported outpost");
 }
 
 void test_evaluation_prefers_castling_to_king_walk()
@@ -487,6 +523,7 @@ int main()
     test_null_move_restores_state_exactly();
     test_start_position_perft();
     test_kiwipete_perft();
+    test_reference_perft_positions();
     test_uci_move_text_parses_promotions();
     test_pseudo_legal_tactical_generation_skips_quiet_moves();
     test_epd_parser_reads_best_avoid_and_id();
@@ -501,6 +538,7 @@ int main()
     test_evaluation_rewards_bishop_pair();
     test_evaluation_rewards_passed_pawn();
     test_evaluation_rewards_rook_open_file();
+    test_evaluation_rewards_supported_outpost();
     test_evaluation_prefers_castling_to_king_walk();
     test_static_exchange_evaluation_scores_winning_capture();
     test_static_exchange_evaluation_scores_losing_capture();

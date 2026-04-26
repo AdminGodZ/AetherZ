@@ -87,7 +87,7 @@ private:
     [[nodiscard]] SearchResult search_depth(Board& board, int depth, int alpha, int beta);
     [[nodiscard]] std::vector<Move> principal_variation(Board board, int depth) const;
     [[nodiscard]] int negamax(Board& board, int depth, int ply, int alpha, int beta);
-    [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta);
+    [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth);
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] std::vector<Move> ordered_moves(
         const Board& board,
@@ -106,7 +106,7 @@ private:
         bool gives_check,
         int static_eval) const;
     [[nodiscard]] bool has_non_pawn_material(const Board& board, Color color) const;
-    [[nodiscard]] int check_extension(const Move& move, int depth, int ply, bool gives_check) const;
+    [[nodiscard]] int tactical_extension(const Move& move, int depth, int ply, bool gives_check, int see_gain) const;
     [[nodiscard]] int late_move_reduction(
         const Move& move,
         int depth,
