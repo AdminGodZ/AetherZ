@@ -1,3 +1,4 @@
+#include "engine/benchmark.hpp"
 #include "engine/uci.hpp"
 
 #include <iostream>
@@ -28,6 +29,27 @@ int main(int argc, char** argv)
 
     if (args.size() > 1 && args[1] == "bench") {
         return aetherz::run_bench_command(std::cout);
+    }
+
+    if (args.size() > 1 && args[1] == "searchbench") {
+        return aetherz::run_search_bench_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
+    }
+
+    if (args.size() > 1 && args[1] == "tactics") {
+        return aetherz::run_tactics_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
+    }
+
+    if (args.size() > 1 && args[1] == "selfplay") {
+        return aetherz::run_selfplay_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
     }
 
     aetherz::UciEngine engine;

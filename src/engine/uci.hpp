@@ -33,6 +33,4 @@ private:
 
 int run_perft_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error);
 int run_divide_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error);
-int run_bench_command(std::ostream& output);
-
 } // namespace aetherz

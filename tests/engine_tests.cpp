@@ -1,3 +1,4 @@
+#include "engine/benchmark.hpp"
 #include "engine/board.hpp"
 #include "engine/evaluate.hpp"
 #include "engine/perft.hpp"
@@ -271,6 +272,45 @@ void test_uci_go_time_controls()
     require(text.find("bestmove ") != std::string::npos, "UCI time-control search returns bestmove");
 }
 
+void test_search_benchmark_command_reports_summary()
+{
+    std::ostringstream output;
+    std::ostringstream error;
+
+    const int status = aetherz::run_search_bench_command({"searchbench", "1"}, output, error);
+    const std::string text = output.str();
+
+    require(status == 0, "searchbench command succeeds");
+    require(error.str().empty(), "searchbench command has no errors");
+    require(text.find("searchbench summary") != std::string::npos, "searchbench reports summary");
+}
+
+void test_selfplay_command_reports_summary()
+{
+    std::ostringstream output;
+    std::ostringstream error;
+
+    const int status = aetherz::run_selfplay_command({"selfplay", "1", "1", "2"}, output, error);
+    const std::string text = output.str();
+
+    require(status == 0, "selfplay command succeeds");
+    require(error.str().empty(), "selfplay command has no errors");
+    require(text.find("selfplay summary") != std::string::npos, "selfplay reports summary");
+}
+
+void test_tactics_command_passes_regressions()
+{
+    std::ostringstream output;
+    std::ostringstream error;
+
+    const int status = aetherz::run_tactics_command({"tactics", "2"}, output, error);
+    const std::string text = output.str();
+
+    require(status == 0, "tactics command succeeds");
+    require(error.str().empty(), "tactics command has no errors");
+    require(text.find("tactics summary passed") != std::string::npos, "tactics reports passing summary");
+}
+
 } // namespace
 
 int main()
@@ -293,6 +333,9 @@ int main()
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();
     test_uci_go_time_controls();
+    test_search_benchmark_command_reports_summary();
+    test_selfplay_command_reports_summary();
+    test_tactics_command_passes_regressions();
 
     std::cout << "engine tests passed\n";
     return 0;

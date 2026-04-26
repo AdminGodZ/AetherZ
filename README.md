@@ -27,6 +27,9 @@ ctest --test-dir build --output-on-failure
 ./build/aetherz perft 3
 ./build/aetherz divide 2
 ./build/aetherz bench
+./build/aetherz searchbench 2
+./build/aetherz tactics 3
+./build/aetherz selfplay 1 2 80
 ```
 
 ## UCI Examples
