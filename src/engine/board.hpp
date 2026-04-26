@@ -52,6 +52,7 @@ public:
     [[nodiscard]] bool in_check(Color color) const;
 
     [[nodiscard]] std::vector<Move> generate_pseudo_legal_moves() const;
+    [[nodiscard]] std::vector<Move> generate_pseudo_legal_tactical_moves() const;
     [[nodiscard]] std::vector<Move> generate_legal_moves() const;
 
     [[nodiscard]] bool make_move(const Move& move, UndoState& undo);

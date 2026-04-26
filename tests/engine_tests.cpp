@@ -1,4 +1,5 @@
 #include "engine/benchmark.hpp"
+#include "engine/attacks.hpp"
 #include "engine/board.hpp"
 #include "engine/evaluate.hpp"
 #include "engine/perft.hpp"
@@ -109,6 +110,28 @@ void test_uci_move_text_parses_promotions()
     require(aetherz::move_to_uci(*move) == "a7a8q", "promotion UCI round-trip");
 }
 
+void test_pseudo_legal_tactical_generation_skips_quiet_moves()
+{
+    const auto board = aetherz::Board::from_fen("4k3/1P6/8/8/8/8/4r3/4Q1K1 w - - 0 1");
+
+    require(board.has_value(), "tactical generation FEN parses");
+
+    bool found_capture = false;
+    bool found_promotion = false;
+    bool found_quiet = false;
+
+    for (const auto& move : board->generate_pseudo_legal_tactical_moves()) {
+        const std::string text = aetherz::move_to_uci(move);
+        found_capture = found_capture || text == "e1e2";
+        found_promotion = found_promotion || text == "b7b8q";
+        found_quiet = found_quiet || text == "g1f1";
+    }
+
+    require(found_capture, "tactical generation includes captures");
+    require(found_promotion, "tactical generation includes quiet promotions");
+    require(!found_quiet, "tactical generation excludes quiet non-promotions");
+}
+
 void test_iterative_search_returns_a_move()
 {
     auto board = aetherz::Board::startpos();
@@ -184,6 +207,53 @@ void test_piece_square_tables_reward_active_knight()
     require(aetherz::evaluate_white(*central) > aetherz::evaluate_white(*corner), "PST rewards active knight placement");
 }
 
+void test_attack_helpers_find_attackers()
+{
+    const auto board = aetherz::Board::from_fen("4k3/4q3/8/8/8/8/4r3/4Q1K1 w - - 0 1");
+
+    require(board.has_value(), "attack helper FEN parses");
+
+    const auto e2 = aetherz::square_from_string("e2");
+    const auto e1 = aetherz::square_from_string("e1");
+    const auto e7 = aetherz::square_from_string("e7");
+
+    require(e2.has_value() && e1.has_value() && e7.has_value(), "attack helper squares parse");
+    require((aetherz::attackers_to(*board, *e2, aetherz::Color::White, board->occupancy()) & aetherz::square_bb(*e1)) != 0,
+        "white queen attacks e2");
+    require((aetherz::attackers_to(*board, *e2, aetherz::Color::Black, board->occupancy()) & aetherz::square_bb(*e7)) != 0,
+        "black queen attacks e2");
+}
+
+void test_evaluation_rewards_bishop_pair()
+{
+    const auto bishop_pair = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/2BBK3 w - - 0 1");
+    const auto bishop_knight = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/2BNK3 w - - 0 1");
+
+    require(bishop_pair.has_value(), "bishop pair FEN parses");
+    require(bishop_knight.has_value(), "bishop knight FEN parses");
+    require(aetherz::evaluate_white(*bishop_pair) > aetherz::evaluate_white(*bishop_knight), "evaluation rewards bishop pair");
+}
+
+void test_evaluation_rewards_passed_pawn()
+{
+    const auto passed = aetherz::Board::from_fen("4k3/7p/P7/8/8/8/8/4K3 w - - 0 1");
+    const auto blocked = aetherz::Board::from_fen("4k3/p7/P7/8/8/8/8/4K3 w - - 0 1");
+
+    require(passed.has_value(), "passed pawn FEN parses");
+    require(blocked.has_value(), "blocked pawn FEN parses");
+    require(aetherz::evaluate_white(*passed) > aetherz::evaluate_white(*blocked), "evaluation rewards passed pawn");
+}
+
+void test_evaluation_rewards_rook_open_file()
+{
+    const auto open_file = aetherz::Board::from_fen("4k3/8/8/8/8/8/7P/R3K3 w - - 0 1");
+    const auto closed_file = aetherz::Board::from_fen("4k3/8/8/8/8/8/P7/R3K3 w - - 0 1");
+
+    require(open_file.has_value(), "open rook file FEN parses");
+    require(closed_file.has_value(), "closed rook file FEN parses");
+    require(aetherz::evaluate_white(*open_file) > aetherz::evaluate_white(*closed_file), "evaluation rewards open rook file");
+}
+
 void test_static_exchange_evaluation_scores_winning_capture()
 {
     const auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/4r3/4Q1K1 w - - 0 1");
@@ -217,6 +287,19 @@ void test_search_finds_mate_in_one()
 
     require(result.best_move.has_value(), "mate-in-one search finds a move");
     require(result.score > 29000, "mate-in-one score is near mate score");
+}
+
+void test_search_scores_root_checkmate()
+{
+    auto board = aetherz::Board::from_fen("7k/6Q1/5K2/8/8/8/8/8 b - - 0 1");
+
+    require(board.has_value(), "root checkmate FEN parses");
+
+    aetherz::Search search;
+    const auto result = search.find_best_move(*board, 2);
+
+    require(!result.best_move.has_value(), "root checkmate has no best move");
+    require(result.score < -29000, "root checkmate score is near mate score");
 }
 
 void test_search_scores_fifty_move_draw()
@@ -321,15 +404,21 @@ int main()
     test_start_position_perft();
     test_kiwipete_perft();
     test_uci_move_text_parses_promotions();
+    test_pseudo_legal_tactical_generation_skips_quiet_moves();
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
     test_evaluation_is_balanced_at_start();
     test_evaluation_rewards_material();
     test_piece_square_tables_reward_active_knight();
+    test_attack_helpers_find_attackers();
+    test_evaluation_rewards_bishop_pair();
+    test_evaluation_rewards_passed_pawn();
+    test_evaluation_rewards_rook_open_file();
     test_static_exchange_evaluation_scores_winning_capture();
     test_static_exchange_evaluation_scores_losing_capture();
     test_search_finds_mate_in_one();
+    test_search_scores_root_checkmate();
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();
     test_uci_go_time_controls();

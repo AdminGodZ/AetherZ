@@ -68,6 +68,11 @@ public:
     [[nodiscard]] std::size_t hash_size_mb() const;
 
 private:
+    enum class MoveGeneration {
+        All,
+        Tactical,
+    };
+
     static constexpr int max_ply = 128;
 
     TranspositionTable table_;
@@ -84,11 +89,31 @@ private:
     [[nodiscard]] int negamax(Board& board, int depth, int ply, int alpha, int beta);
     [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta);
     [[nodiscard]] int evaluate(const Board& board) const;
-    [[nodiscard]] std::vector<Move> ordered_moves(const Board& board, std::optional<Move> tt_move, int ply) const;
+    [[nodiscard]] std::vector<Move> ordered_moves(
+        const Board& board,
+        std::optional<Move> tt_move,
+        int ply,
+        MoveGeneration generation = MoveGeneration::All) const;
     [[nodiscard]] bool should_stop(bool force_check = false);
     [[nodiscard]] bool can_try_null_move(const Board& board, int depth, int ply, int alpha, int beta) const;
+    [[nodiscard]] bool can_prune_reverse_futility(int depth, int ply, int beta, bool in_check, int static_eval) const;
+    [[nodiscard]] bool can_prune_futility(
+        const Move& move,
+        int depth,
+        int move_index,
+        int alpha,
+        bool in_check,
+        bool gives_check,
+        int static_eval) const;
     [[nodiscard]] bool has_non_pawn_material(const Board& board, Color color) const;
-    [[nodiscard]] bool can_reduce_late_move(const Move& move, int depth, int ply, int move_index, bool in_check) const;
+    [[nodiscard]] int check_extension(const Move& move, int depth, int ply, bool gives_check) const;
+    [[nodiscard]] int late_move_reduction(
+        const Move& move,
+        int depth,
+        int ply,
+        int move_index,
+        bool in_check,
+        bool gives_check) const;
     [[nodiscard]] bool is_draw(const Board& board) const;
     [[nodiscard]] int repetition_count(std::uint64_t hash) const;
     void reset_position_history(const Board& board, const SearchLimits& limits);
