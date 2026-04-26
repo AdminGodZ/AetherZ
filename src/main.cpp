@@ -52,6 +52,20 @@ int main(int argc, char** argv)
             std::cerr);
     }
 
+    if (args.size() > 1 && args[1] == "epdtest") {
+        return aetherz::run_epd_test_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
+    }
+
+    if (args.size() > 1 && args[1] == "arasan") {
+        return aetherz::run_arasan_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
+    }
+
     aetherz::UciEngine engine;
     engine.loop(std::cin, std::cout);
     return 0;

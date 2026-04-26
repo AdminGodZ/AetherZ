@@ -1,6 +1,7 @@
 #include "engine/benchmark.hpp"
 #include "engine/attacks.hpp"
 #include "engine/board.hpp"
+#include "engine/epd.hpp"
 #include "engine/evaluate.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
@@ -10,8 +11,10 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -130,6 +133,33 @@ void test_pseudo_legal_tactical_generation_skips_quiet_moves()
     require(found_capture, "tactical generation includes captures");
     require(found_promotion, "tactical generation includes quiet promotions");
     require(!found_quiet, "tactical generation excludes quiet non-promotions");
+}
+
+void test_epd_parser_reads_best_avoid_and_id()
+{
+    const auto position = aetherz::parse_epd(
+        "r1b2rk1/1p1nbppp/pq1p4/3B4/P2NP3/2N1p3/1PP3PP/R2Q1R1K w - - bm Rxf7; am Qh5; id \"sample.1\";");
+
+    require(position.has_value(), "EPD line parses");
+    require(position->id == "sample.1", "EPD id parses");
+    require(position->best_moves.size() == 1 && position->best_moves.front() == "Rxf7", "EPD bm parses");
+    require(position->avoid_moves.size() == 1 && position->avoid_moves.front() == "Qh5", "EPD am parses");
+
+    const auto od_position = aetherz::parse_epd(
+        "1q3r1k/6b1/B6p/2P5/1P1p2pQ/P3r3/6P1/1R1R2K1 b - - bm g3; od \"sample.od\";");
+    require(od_position.has_value() && od_position->id == "sample.od", "EPD od fallback id parses");
+}
+
+void test_epd_move_matching_accepts_san()
+{
+    const auto board = aetherz::Board::from_fen(
+        "r1b2rk1/1p1nbppp/pq1p4/3B4/P2NP3/2N1p3/1PP3PP/R2Q1R1K w - - 0 1");
+
+    require(board.has_value(), "EPD SAN test FEN parses");
+
+    const auto move = require_legal_move(*board, "f1f7");
+
+    require(aetherz::epd_move_matches(*board, "Rxf7", move), "EPD matcher accepts SAN capture");
 }
 
 void test_iterative_search_returns_a_move()
@@ -429,6 +459,25 @@ void test_tactics_command_passes_regressions()
     require(text.find("tactics summary passed") != std::string::npos, "tactics reports passing summary");
 }
 
+void test_epd_test_command_reports_summary()
+{
+    const std::string path = "/tmp/aetherz_epd_sample.epd";
+    {
+        std::ofstream output{path};
+        output << "7k/8/5KQ1/8/8/8/8/8 w - - bm Qg7#; id \"mate.1\";\n";
+    }
+
+    std::ostringstream output;
+    std::ostringstream error;
+
+    const int status = aetherz::run_epd_test_command({"epdtest", path, "1"}, output, error);
+    const std::string text = output.str();
+
+    require(status == 0, "epdtest command succeeds");
+    require(error.str().empty(), "epdtest command has no errors");
+    require(text.find("epdtest summary tested 1 passed 1 failed 0") != std::string::npos, "epdtest reports passing summary");
+}
+
 } // namespace
 
 int main()
@@ -440,6 +489,8 @@ int main()
     test_kiwipete_perft();
     test_uci_move_text_parses_promotions();
     test_pseudo_legal_tactical_generation_skips_quiet_moves();
+    test_epd_parser_reads_best_avoid_and_id();
+    test_epd_move_matching_accepts_san();
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
@@ -462,6 +513,7 @@ int main()
     test_search_benchmark_command_reports_summary();
     test_selfplay_command_reports_summary();
     test_tactics_command_passes_regressions();
+    test_epd_test_command_reports_summary();
 
     std::cout << "engine tests passed\n";
     return 0;
