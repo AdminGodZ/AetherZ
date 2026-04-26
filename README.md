@@ -30,6 +30,8 @@ ctest --test-dir build --output-on-failure
 ./build/aetherz searchbench 2
 ./build/aetherz tactics 3
 ./build/aetherz selfplay 1 2 80
+./build/aetherz epdtest testsuites/arasan2024.epd 3
+./build/aetherz arasan 3
 ```
 
 ## UCI Examples

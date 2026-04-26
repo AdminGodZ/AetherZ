@@ -173,6 +173,10 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
             run_tactics_command(tokens, output, output);
         } else if (command == "selfplay") {
             run_selfplay_command(tokens, output, output);
+        } else if (command == "epdtest") {
+            run_epd_test_command(tokens, output, output);
+        } else if (command == "arasan") {
+            run_arasan_command(tokens, output, output);
         } else if (command == "quit") {
             break;
         } else if (command == "stop") {

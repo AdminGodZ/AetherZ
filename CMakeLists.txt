@@ -15,6 +15,7 @@ add_library(aetherz_engine
     src/engine/attacks.cpp
     src/engine/benchmark.cpp
     src/engine/board.cpp
+    src/engine/epd.cpp
     src/engine/evaluate.cpp
     src/engine/perft.cpp
     src/engine/search.cpp

@@ -1,6 +1,7 @@
 #include "engine/benchmark.hpp"
 
 #include "engine/board.hpp"
+#include "engine/epd.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 #include "engine/types.hpp"
@@ -10,6 +11,8 @@
 #include <cstdint>
 #include <optional>
 #include <ostream>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -44,6 +47,18 @@ std::optional<int> parse_positive_int(const std::vector<std::string>& args, std:
     return std::nullopt;
 }
 
+std::string join_words(const std::vector<std::string>& words)
+{
+    std::ostringstream output;
+    for (std::size_t index = 0; index < words.size(); ++index) {
+        if (index != 0) {
+            output << ' ';
+        }
+        output << words[index];
+    }
+    return output.str();
+}
+
 std::int64_t elapsed_ms(std::chrono::steady_clock::time_point start)
 {
     return std::max<std::int64_t>(
@@ -62,6 +77,13 @@ bool contains_move(const std::vector<std::string_view>& moves, const Move& move)
 {
     return std::ranges::any_of(moves, [&](std::string_view expected) {
         return same_uci_move(move, expected);
+    });
+}
+
+bool contains_epd_move(const Board& board, const std::vector<std::string>& moves, const Move& move)
+{
+    return std::ranges::any_of(moves, [&](const std::string& expected) {
+        return epd_move_matches(board, expected, move);
     });
 }
 
@@ -354,6 +376,108 @@ int run_selfplay_command(const std::vector<std::string>& args, std::ostream& out
            << " black " << black_wins
            << " draw " << draws << '\n';
     return 0;
+}
+
+int run_epd_test_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error)
+{
+    if (args.size() < 2 || args.size() > 4) {
+        error << "usage: aetherz epdtest <file> [depth] [max-positions]\n";
+        return 1;
+    }
+
+    const int depth = parse_positive_int(args, 2).value_or(3);
+    const int max_positions = parse_positive_int(args, 3).value_or(0);
+    if ((args.size() > 2 && !parse_positive_int(args, 2)) || (args.size() > 3 && !parse_positive_int(args, 3))) {
+        error << "usage: aetherz epdtest <file> [depth] [max-positions]\n";
+        return 1;
+    }
+
+    const auto positions = load_epd_file(args[1]);
+    if (positions.empty()) {
+        error << "no EPD positions loaded from " << args[1] << '\n';
+        return 1;
+    }
+
+    int tested = 0;
+    int passed = 0;
+    int failed = 0;
+    int skipped = 0;
+
+    output << "epdtest file " << args[1] << " depth " << depth << '\n';
+
+    for (const EpdPosition& position : positions) {
+        if (max_positions > 0 && tested >= max_positions) {
+            break;
+        }
+
+        if (position.best_moves.empty() && position.avoid_moves.empty()) {
+            ++skipped;
+            continue;
+        }
+
+        ++tested;
+
+        auto board = Board::from_fen(position.fen);
+        if (!board) {
+            ++failed;
+            output << "epd fail " << (position.id.empty() ? "<no-id>" : position.id)
+                   << " invalid-fen\n";
+            continue;
+        }
+
+        Search search;
+        SearchLimits limits;
+        limits.max_depth = depth;
+        limits.position_history = {board->hash()};
+
+        const auto start = std::chrono::steady_clock::now();
+        const SearchResult result = search.find_best_move(*board, limits);
+        const auto ms = elapsed_ms(start);
+        const std::string best = result.best_move ? move_to_uci(*result.best_move) : "0000";
+
+        const bool matched_best = result.best_move && contains_epd_move(*board, position.best_moves, *result.best_move);
+        const bool matched_avoid = result.best_move && contains_epd_move(*board, position.avoid_moves, *result.best_move);
+        const bool ok = result.best_move.has_value() && (!position.best_moves.empty() ? matched_best : !matched_avoid);
+
+        passed += ok ? 1 : 0;
+        failed += ok ? 0 : 1;
+
+        output << "epd " << (ok ? "ok " : "fail ")
+               << (position.id.empty() ? "<no-id>" : position.id)
+               << " best " << best
+               << " score " << result.score
+               << " nodes " << result.nodes
+               << " time " << ms;
+        if (!position.best_moves.empty()) {
+            output << " bm " << join_words(position.best_moves);
+        }
+        if (!position.avoid_moves.empty()) {
+            output << " am " << join_words(position.avoid_moves);
+        }
+        output << '\n';
+    }
+
+    output << "epdtest summary tested " << tested
+           << " passed " << passed
+           << " failed " << failed
+           << " skipped " << skipped << '\n';
+    return failed == 0 ? 0 : 1;
+}
+
+int run_arasan_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error)
+{
+    std::vector<std::string> epd_args{"epdtest", "testsuites/arasan2024.epd"};
+    if (args.size() > 1) {
+        epd_args.push_back(args[1]);
+    }
+    if (args.size() > 2) {
+        epd_args.push_back(args[2]);
+    }
+    if (args.size() > 3) {
+        error << "usage: aetherz arasan [depth] [max-positions]\n";
+        return 1;
+    }
+    return run_epd_test_command(epd_args, output, error);
 }
 
 } // namespace aetherz
