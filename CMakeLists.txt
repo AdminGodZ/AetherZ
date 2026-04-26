@@ -16,6 +16,7 @@ add_library(aetherz_engine
     src/engine/evaluate.cpp
     src/engine/perft.cpp
     src/engine/search.cpp
+    src/engine/see.cpp
     src/engine/types.cpp
     src/engine/uci.cpp
 )

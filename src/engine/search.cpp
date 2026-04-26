@@ -1,6 +1,7 @@
 #include "engine/search.hpp"
 
 #include "engine/evaluate.hpp"
+#include "engine/see.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,13 @@ bool is_tactical(const Move& move)
     return move.flag == MoveFlag::Capture
         || move.flag == MoveFlag::EnPassant
         || move.flag == MoveFlag::Promotion
+        || move.flag == MoveFlag::PromotionCapture;
+}
+
+bool is_capture_like(const Move& move)
+{
+    return move.flag == MoveFlag::Capture
+        || move.flag == MoveFlag::EnPassant
         || move.flag == MoveFlag::PromotionCapture;
 }
 
@@ -493,18 +501,26 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
         return 0;
     }
 
-    const int stand_pat = evaluate(board);
-    if (stand_pat >= beta) {
-        return beta;
+    const bool in_check = board.in_check(board.side_to_move());
+    if (!in_check) {
+        const int stand_pat = evaluate(board);
+        if (stand_pat >= beta) {
+            return beta;
+        }
+        alpha = std::max(alpha, stand_pat);
     }
-    alpha = std::max(alpha, stand_pat);
 
+    bool searched_move = false;
     for (const Move& move : ordered_moves(board, std::nullopt, ply)) {
         if (should_stop()) {
             break;
         }
 
-        if (!is_tactical(move)) {
+        if (!in_check && !is_tactical(move)) {
+            continue;
+        }
+
+        if (!in_check && is_capture_like(move) && static_exchange_evaluation(board, move) < 0) {
             continue;
         }
 
@@ -513,6 +529,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
             continue;
         }
         push_position(board);
+        searched_move = true;
 
         const int score = -quiescence(board, ply + 1, -beta, -alpha);
         pop_position();
@@ -524,7 +541,10 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta)
         alpha = std::max(alpha, score);
     }
 
-    (void)ply;
+    if (in_check && !searched_move && !stop_) {
+        return -mate_score + ply;
+    }
+
     return alpha;
 }
 
@@ -536,18 +556,25 @@ int Search::evaluate(const Board& board) const
 std::vector<Move> Search::ordered_moves(const Board& board, std::optional<Move> tt_move, int ply) const
 {
     auto moves = board.generate_legal_moves();
-    std::stable_sort(moves.begin(), moves.end(), [&](const Move& left, const Move& right) {
-        const auto score_move = [&](const Move& move) {
-            if (tt_move && same_move(move, *tt_move)) {
-                return 2'000'000;
-            }
+    struct ScoredMove {
+        Move move;
+        int score = 0;
+    };
 
-            int score = 0;
+    std::vector<ScoredMove> scored_moves;
+    scored_moves.reserve(moves.size());
+
+    for (const Move& move : moves) {
+        int score = 0;
+        if (tt_move && same_move(move, *tt_move)) {
+            score = 2'000'000;
+        } else {
             if (move.flag == MoveFlag::Promotion || move.flag == MoveFlag::PromotionCapture) {
                 score += 900'000 + promotion_score(move.promotion);
             }
-            if (move.flag == MoveFlag::Capture || move.flag == MoveFlag::EnPassant || move.flag == MoveFlag::PromotionCapture) {
-                score += 800'000 + capture_score(board, move);
+            if (is_capture_like(move)) {
+                const int see = static_exchange_evaluation(board, move);
+                score += (see >= 0 ? 800'000 : 100'000) + see * 8 + capture_score(board, move);
             }
 
             if (ply >= 0 && ply < max_ply) {
@@ -561,12 +588,19 @@ std::vector<Move> Search::ordered_moves(const Board& board, std::optional<Move> 
             if (move.from >= 0 && move.to >= 0) {
                 score += history_[move.from][move.to];
             }
+        }
 
-            return score;
-        };
+        scored_moves.push_back(ScoredMove{.move = move, .score = score});
+    }
 
-        return score_move(left) > score_move(right);
+    std::stable_sort(scored_moves.begin(), scored_moves.end(), [](const ScoredMove& left, const ScoredMove& right) {
+        return left.score > right.score;
     });
+
+    for (std::size_t index = 0; index < scored_moves.size(); ++index) {
+        moves[index] = scored_moves[index].move;
+    }
+
     return moves;
 }
 

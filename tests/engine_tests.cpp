@@ -2,6 +2,7 @@
 #include "engine/evaluate.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
+#include "engine/see.hpp"
 #include "engine/types.hpp"
 #include "engine/uci.hpp"
 
@@ -19,6 +20,21 @@ void require(bool condition, std::string_view message)
         std::cerr << "FAILED: " << message << '\n';
         std::exit(1);
     }
+}
+
+aetherz::Move require_legal_move(const aetherz::Board& board, std::string_view text)
+{
+    const auto parsed = aetherz::move_from_uci(text);
+    require(parsed.has_value(), "test move UCI parses");
+
+    for (const auto& move : board.generate_legal_moves()) {
+        if (move.from == parsed->from && move.to == parsed->to && move.promotion == parsed->promotion) {
+            return move;
+        }
+    }
+
+    require(false, "test move is legal");
+    return {};
 }
 
 void test_start_position_fen_round_trips()
@@ -167,6 +183,28 @@ void test_piece_square_tables_reward_active_knight()
     require(aetherz::evaluate_white(*central) > aetherz::evaluate_white(*corner), "PST rewards active knight placement");
 }
 
+void test_static_exchange_evaluation_scores_winning_capture()
+{
+    const auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/4r3/4Q1K1 w - - 0 1");
+
+    require(board.has_value(), "winning SEE FEN parses");
+
+    const auto move = require_legal_move(*board, "e1e2");
+
+    require(aetherz::static_exchange_evaluation(*board, move) > 400, "SEE scores undefended rook capture as winning");
+}
+
+void test_static_exchange_evaluation_scores_losing_capture()
+{
+    const auto board = aetherz::Board::from_fen("4k3/4q3/8/8/8/8/4r3/4Q1K1 w - - 0 1");
+
+    require(board.has_value(), "losing SEE FEN parses");
+
+    const auto move = require_legal_move(*board, "e1e2");
+
+    require(aetherz::static_exchange_evaluation(*board, move) < 0, "SEE scores protected rook capture as losing");
+}
+
 void test_search_finds_mate_in_one()
 {
     auto board = aetherz::Board::from_fen("7k/8/5KQ1/8/8/8/8/8 w - - 0 1");
@@ -249,6 +287,8 @@ int main()
     test_evaluation_is_balanced_at_start();
     test_evaluation_rewards_material();
     test_piece_square_tables_reward_active_knight();
+    test_static_exchange_evaluation_scores_winning_capture();
+    test_static_exchange_evaluation_scores_losing_capture();
     test_search_finds_mate_in_one();
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();
