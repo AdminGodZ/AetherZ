@@ -338,6 +338,15 @@ std::string Board::to_fen() const
     return result;
 }
 
+bool Board::can_castle(Color color, bool kingside) const
+{
+    if (color == Color::White) {
+        return (castling_rights_ & (kingside ? WhiteKingSide : WhiteQueenSide)) != 0;
+    }
+
+    return (castling_rights_ & (kingside ? BlackKingSide : BlackQueenSide)) != 0;
+}
+
 Bitboard Board::pieces(Piece piece) const
 {
     if (piece == Piece::None) {

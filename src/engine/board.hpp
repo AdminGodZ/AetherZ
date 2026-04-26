@@ -40,6 +40,7 @@ public:
     [[nodiscard]] int halfmove_clock() const { return halfmove_clock_; }
     [[nodiscard]] int fullmove_number() const { return fullmove_number_; }
     [[nodiscard]] std::uint64_t hash() const { return hash_; }
+    [[nodiscard]] bool can_castle(Color color, bool kingside) const;
 
     [[nodiscard]] Bitboard pieces(Piece piece) const;
     [[nodiscard]] Bitboard pieces(Color color, PieceType type) const;
