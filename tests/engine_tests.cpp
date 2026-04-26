@@ -110,6 +110,28 @@ void test_uci_move_text_parses_promotions()
     require(aetherz::move_to_uci(*move) == "a7a8q", "promotion UCI round-trip");
 }
 
+void test_pseudo_legal_tactical_generation_skips_quiet_moves()
+{
+    const auto board = aetherz::Board::from_fen("4k3/1P6/8/8/8/8/4r3/4Q1K1 w - - 0 1");
+
+    require(board.has_value(), "tactical generation FEN parses");
+
+    bool found_capture = false;
+    bool found_promotion = false;
+    bool found_quiet = false;
+
+    for (const auto& move : board->generate_pseudo_legal_tactical_moves()) {
+        const std::string text = aetherz::move_to_uci(move);
+        found_capture = found_capture || text == "e1e2";
+        found_promotion = found_promotion || text == "b7b8q";
+        found_quiet = found_quiet || text == "g1f1";
+    }
+
+    require(found_capture, "tactical generation includes captures");
+    require(found_promotion, "tactical generation includes quiet promotions");
+    require(!found_quiet, "tactical generation excludes quiet non-promotions");
+}
+
 void test_iterative_search_returns_a_move()
 {
     auto board = aetherz::Board::startpos();
@@ -267,6 +289,19 @@ void test_search_finds_mate_in_one()
     require(result.score > 29000, "mate-in-one score is near mate score");
 }
 
+void test_search_scores_root_checkmate()
+{
+    auto board = aetherz::Board::from_fen("7k/6Q1/5K2/8/8/8/8/8 b - - 0 1");
+
+    require(board.has_value(), "root checkmate FEN parses");
+
+    aetherz::Search search;
+    const auto result = search.find_best_move(*board, 2);
+
+    require(!result.best_move.has_value(), "root checkmate has no best move");
+    require(result.score < -29000, "root checkmate score is near mate score");
+}
+
 void test_search_scores_fifty_move_draw()
 {
     auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 99 50");
@@ -369,6 +404,7 @@ int main()
     test_start_position_perft();
     test_kiwipete_perft();
     test_uci_move_text_parses_promotions();
+    test_pseudo_legal_tactical_generation_skips_quiet_moves();
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
@@ -382,6 +418,7 @@ int main()
     test_static_exchange_evaluation_scores_winning_capture();
     test_static_exchange_evaluation_scores_losing_capture();
     test_search_finds_mate_in_one();
+    test_search_scores_root_checkmate();
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();
     test_uci_go_time_controls();

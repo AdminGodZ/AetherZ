@@ -120,7 +120,8 @@ void add_slider_moves(
     std::vector<Move>& moves,
     int from,
     Color us,
-    const std::array<std::pair<int, int>, 4>& directions)
+    const std::array<std::pair<int, int>, 4>& directions,
+    bool tactical_only = false)
 {
     for (const auto& [delta_file, delta_rank] : directions) {
         int file = file_of(from) + delta_file;
@@ -130,7 +131,9 @@ void add_slider_moves(
             const int to = rank * 8 + file;
             const Piece target = board.piece_at(to);
             if (target == Piece::None) {
-                moves.push_back(Move{.from = from, .to = to});
+                if (!tactical_only) {
+                    moves.push_back(Move{.from = from, .to = to});
+                }
             } else {
                 if (piece_color(target) != us && piece_type(target) != PieceType::King) {
                     moves.push_back(Move{.from = from, .to = to, .flag = MoveFlag::Capture});
@@ -555,6 +558,115 @@ std::vector<Move> Board::generate_pseudo_legal_moves() const
                 && !is_square_attacked(59, Color::White)
                 && !is_square_attacked(58, Color::White)) {
                 moves.push_back(Move{.from = 60, .to = 58, .flag = MoveFlag::QueenCastle});
+            }
+        }
+    }
+
+    return moves;
+}
+
+std::vector<Move> Board::generate_pseudo_legal_tactical_moves() const
+{
+    std::vector<Move> moves;
+    moves.reserve(64);
+
+    const Color us = side_to_move_;
+    const Color them = opposite(us);
+    const int forward = us == Color::White ? 8 : -8;
+    const int promotion_rank = us == Color::White ? 6 : 1;
+
+    Bitboard pawns = pieces(us, PieceType::Pawn);
+    while (pawns != 0) {
+        const int from = pop_lsb(pawns);
+        const int from_file = file_of(from);
+        const int from_rank = rank_of(from);
+        const int one_forward = from + forward;
+
+        if (from_rank == promotion_rank
+            && is_valid_square(one_forward)
+            && piece_at(one_forward) == Piece::None) {
+            add_promotion_moves(moves, from, one_forward, MoveFlag::Promotion);
+        }
+
+        const std::array<int, 2> capture_offsets = us == Color::White
+            ? std::array<int, 2>{7, 9}
+            : std::array<int, 2>{-9, -7};
+
+        for (const int offset : capture_offsets) {
+            if ((offset == 7 || offset == -9) && from_file == 0) {
+                continue;
+            }
+            if ((offset == 9 || offset == -7) && from_file == 7) {
+                continue;
+            }
+
+            const int to = from + offset;
+            if (!is_valid_square(to)) {
+                continue;
+            }
+
+            const Piece target = piece_at(to);
+            if (target != Piece::None && piece_color(target) == them && piece_type(target) != PieceType::King) {
+                if (from_rank == promotion_rank) {
+                    add_promotion_moves(moves, from, to, MoveFlag::PromotionCapture);
+                } else {
+                    moves.push_back(Move{.from = from, .to = to, .flag = MoveFlag::Capture});
+                }
+            } else if (to == en_passant_square_) {
+                moves.push_back(Move{.from = from, .to = to, .flag = MoveFlag::EnPassant});
+            }
+        }
+    }
+
+    Bitboard knights = pieces(us, PieceType::Knight);
+    while (knights != 0) {
+        const int from = pop_lsb(knights);
+        for (const auto& [delta_file, delta_rank] : knight_offsets) {
+            const int to_file = file_of(from) + delta_file;
+            const int to_rank = rank_of(from) + delta_rank;
+            if (to_file < 0 || to_file >= 8 || to_rank < 0 || to_rank >= 8) {
+                continue;
+            }
+
+            const int to = to_rank * 8 + to_file;
+            const Piece target = piece_at(to);
+            if (target != Piece::None && piece_color(target) == them && piece_type(target) != PieceType::King) {
+                moves.push_back(Move{.from = from, .to = to, .flag = MoveFlag::Capture});
+            }
+        }
+    }
+
+    Bitboard bishops = pieces(us, PieceType::Bishop);
+    while (bishops != 0) {
+        add_slider_moves(*this, moves, pop_lsb(bishops), us, bishop_directions, true);
+    }
+
+    Bitboard rooks = pieces(us, PieceType::Rook);
+    while (rooks != 0) {
+        add_slider_moves(*this, moves, pop_lsb(rooks), us, rook_directions, true);
+    }
+
+    Bitboard queens = pieces(us, PieceType::Queen);
+    while (queens != 0) {
+        const int from = pop_lsb(queens);
+        add_slider_moves(*this, moves, from, us, bishop_directions, true);
+        add_slider_moves(*this, moves, from, us, rook_directions, true);
+    }
+
+    Bitboard kings = pieces(us, PieceType::King);
+    if (kings != 0) {
+        const int from = pop_lsb(kings);
+        for (const auto& [delta_file, delta_rank] : king_offsets) {
+            const int to_file = file_of(from) + delta_file;
+            const int to_rank = rank_of(from) + delta_rank;
+            if (to_file < 0 || to_file >= 8 || to_rank < 0 || to_rank >= 8) {
+                continue;
+            }
+
+            const int to = to_rank * 8 + to_file;
+            const Piece target = piece_at(to);
+            if (target != Piece::None && piece_color(target) == them && piece_type(target) != PieceType::King) {
+                moves.push_back(Move{.from = from, .to = to, .flag = MoveFlag::Capture});
             }
         }
     }
