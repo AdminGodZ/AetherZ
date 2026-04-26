@@ -1,11 +1,29 @@
 #include "engine/see.hpp"
 
+#include "engine/attacks.hpp"
 #include "engine/evaluate.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <optional>
 
 namespace aetherz {
 namespace {
+
+struct SelectedAttacker {
+    int square = -1;
+    PieceType type = PieceType::None;
+};
+
+constexpr std::array<PieceType, 6> attacker_order{
+    PieceType::Pawn,
+    PieceType::Knight,
+    PieceType::Bishop,
+    PieceType::Rook,
+    PieceType::Queen,
+    PieceType::King,
+};
 
 bool is_capture_like(const Move& move)
 {
@@ -41,37 +59,41 @@ int captured_value(const Board& board, const Move& move)
     return piece_value(piece_type(board.piece_at(move.to)));
 }
 
-int material_gain(const Board& board, const Move& move)
+int captured_square(const Board& board, const Move& move)
 {
-    return captured_value(board, move) + promotion_delta(move);
-}
-
-bool recaptures_square(const Move& move, int square)
-{
-    return move.to == square && is_capture_like(move);
-}
-
-int best_exchange_reply(Board& board, int target_square)
-{
-    int best = 0;
-
-    for (const Move& move : board.generate_legal_moves()) {
-        if (!recaptures_square(move, target_square)) {
-            continue;
-        }
-
-        const int gain = material_gain(board, move);
-        Board::UndoState undo;
-        if (!board.make_move(move, undo)) {
-            continue;
-        }
-
-        const int score = gain - best_exchange_reply(board, target_square);
-        board.unmake_move(undo);
-        best = std::max(best, score);
+    if (move.flag != MoveFlag::EnPassant) {
+        return move.to;
     }
 
-    return best;
+    return board.side_to_move() == Color::White ? move.to - 8 : move.to + 8;
+}
+
+std::optional<SelectedAttacker> least_valuable_attacker(
+    const Board& board,
+    Color color,
+    int target_square,
+    Bitboard attackers,
+    Bitboard occupancy)
+{
+    for (const PieceType type : attacker_order) {
+        Bitboard candidates = attackers & board.pieces(color, type) & occupancy;
+        while (candidates != 0) {
+            const int square = std::countr_zero(candidates);
+            candidates &= candidates - 1;
+
+            if (type == PieceType::King
+                && attackers_to(board, target_square, opposite(color), occupancy & ~square_bb(square)) != 0) {
+                continue;
+            }
+
+            return SelectedAttacker{
+                .square = square,
+                .type = type,
+            };
+        }
+    }
+
+    return std::nullopt;
 }
 
 } // namespace
@@ -82,13 +104,53 @@ int static_exchange_evaluation(const Board& board, const Move& move)
         return 0;
     }
 
+    const Piece moving_piece = board.piece_at(move.from);
+    if (moving_piece == Piece::None || piece_color(moving_piece) != board.side_to_move()) {
+        return 0;
+    }
+
     Board next = board;
     Board::UndoState undo;
     if (!next.make_move(move, undo) || next.in_check(board.side_to_move())) {
         return 0;
     }
 
-    return material_gain(board, move) - best_exchange_reply(next, move.to);
+    std::array<int, 32> gains{};
+    gains[0] = captured_value(board, move) + promotion_delta(move);
+
+    Bitboard occupancy = board.occupancy();
+    occupancy &= ~square_bb(move.from);
+    if (move.flag == MoveFlag::EnPassant) {
+        occupancy &= ~square_bb(captured_square(board, move));
+    }
+    occupancy |= square_bb(move.to);
+
+    int target_value = piece_value(
+        move.promotion == PieceType::None ? piece_type(moving_piece) : move.promotion);
+    Color side = opposite(board.side_to_move());
+    int depth = 0;
+
+    while (depth + 1 < static_cast<int>(gains.size())) {
+        const Bitboard attackers = attackers_to(board, move.to, side, occupancy);
+        const auto attacker = least_valuable_attacker(board, side, move.to, attackers, occupancy);
+        if (!attacker) {
+            break;
+        }
+
+        ++depth;
+        gains[depth] = target_value - gains[depth - 1];
+
+        occupancy &= ~square_bb(attacker->square);
+        target_value = piece_value(attacker->type);
+        side = opposite(side);
+    }
+
+    while (depth > 0) {
+        --depth;
+        gains[depth] = -std::max(-gains[depth], gains[depth + 1]);
+    }
+
+    return gains[0];
 }
 
 } // namespace aetherz

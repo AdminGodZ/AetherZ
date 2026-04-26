@@ -12,6 +12,7 @@ add_executable(aetherz
 )
 
 add_library(aetherz_engine
+    src/engine/attacks.cpp
     src/engine/benchmark.cpp
     src/engine/board.cpp
     src/engine/evaluate.cpp

@@ -1,5 +1,7 @@
 #include "engine/board.hpp"
 
+#include "engine/attacks.hpp"
+
 #include <array>
 #include <bit>
 #include <cctype>
@@ -102,11 +104,6 @@ int pop_lsb(Bitboard& bitboard)
     return square;
 }
 
-bool contains_piece(const Board& board, int square, Piece piece)
-{
-    return is_valid_square(square) && board.piece_at(square) == piece;
-}
-
 void add_promotion_moves(
     std::vector<Move>& moves,
     int from,
@@ -145,40 +142,6 @@ void add_slider_moves(
             rank += delta_rank;
         }
     }
-}
-
-bool attacks_on_ray(
-    const Board& board,
-    int square,
-    Color by_color,
-    const std::array<std::pair<int, int>, 4>& directions,
-    PieceType primary_slider)
-{
-    for (const auto& [delta_file, delta_rank] : directions) {
-        int file = file_of(square) + delta_file;
-        int rank = rank_of(square) + delta_rank;
-
-        while (file >= 0 && file < 8 && rank >= 0 && rank < 8) {
-            const Piece piece = board.piece_at(rank * 8 + file);
-            if (piece == Piece::None) {
-                file += delta_file;
-                rank += delta_rank;
-                continue;
-            }
-
-            if (piece_color(piece) != by_color) {
-                break;
-            }
-
-            const PieceType type = piece_type(piece);
-            if (type == primary_slider || type == PieceType::Queen) {
-                return true;
-            }
-            break;
-        }
-    }
-
-    return false;
 }
 
 } // namespace
@@ -428,60 +391,7 @@ int Board::king_square(Color color) const
 
 bool Board::is_square_attacked(int square, Color by_color) const
 {
-    if (!is_valid_square(square)) {
-        return false;
-    }
-
-    const int file = file_of(square);
-
-    if (by_color == Color::White) {
-        if (file < 7 && contains_piece(*this, square - 7, Piece::WhitePawn)) {
-            return true;
-        }
-        if (file > 0 && contains_piece(*this, square - 9, Piece::WhitePawn)) {
-            return true;
-        }
-    } else {
-        if (file > 0 && contains_piece(*this, square + 7, Piece::BlackPawn)) {
-            return true;
-        }
-        if (file < 7 && contains_piece(*this, square + 9, Piece::BlackPawn)) {
-            return true;
-        }
-    }
-
-    for (const auto& [delta_file, delta_rank] : knight_offsets) {
-        const int target_file = file + delta_file;
-        const int target_rank = rank_of(square) + delta_rank;
-        if (target_file < 0 || target_file >= 8 || target_rank < 0 || target_rank >= 8) {
-            continue;
-        }
-
-        if (piece_at(target_rank * 8 + target_file) == make_piece(by_color, PieceType::Knight)) {
-            return true;
-        }
-    }
-
-    if (attacks_on_ray(*this, square, by_color, bishop_directions, PieceType::Bishop)) {
-        return true;
-    }
-    if (attacks_on_ray(*this, square, by_color, rook_directions, PieceType::Rook)) {
-        return true;
-    }
-
-    for (const auto& [delta_file, delta_rank] : king_offsets) {
-        const int target_file = file + delta_file;
-        const int target_rank = rank_of(square) + delta_rank;
-        if (target_file < 0 || target_file >= 8 || target_rank < 0 || target_rank >= 8) {
-            continue;
-        }
-
-        if (piece_at(target_rank * 8 + target_file) == make_piece(by_color, PieceType::King)) {
-            return true;
-        }
-    }
-
-    return false;
+    return attackers_to(*this, square, by_color, occupancy()) != 0;
 }
 
 bool Board::in_check(Color color) const
