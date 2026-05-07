@@ -3,6 +3,7 @@
 #include "engine/board.hpp"
 #include "engine/epd.hpp"
 #include "engine/evaluate.hpp"
+#include "engine/nnue/nnue.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 #include "engine/see.hpp"
@@ -82,6 +83,29 @@ void test_null_move_restores_state_exactly()
 
     require(board.to_fen() == before_fen, "null unmake restores FEN");
     require(board.hash() == before_hash, "null unmake restores hash");
+}
+
+void test_board_piece_cache_tracks_moves()
+{
+    auto board = aetherz::Board::startpos();
+    const auto before_squares = board.squares();
+    const auto before_white_occupancy = board.occupancy(aetherz::Color::White);
+    const auto before_all_occupancy = board.occupancy();
+
+    const auto move = require_legal_move(board, "e2e4");
+    aetherz::Board::UndoState undo;
+    require(board.make_move(move, undo), "cached board test move can be made");
+
+    require(board.piece_at(12) == aetherz::Piece::None, "piece cache clears source square");
+    require(board.piece_at(28) == aetherz::Piece::WhitePawn, "piece cache fills target square");
+    require((board.occupancy(aetherz::Color::White) & aetherz::square_bb(28)) != 0, "white occupancy includes moved pawn");
+    require((board.occupancy(aetherz::Color::White) & aetherz::square_bb(12)) == 0, "white occupancy clears source");
+    require(board.king_square(aetherz::Color::White) == 4, "king cache remains valid");
+
+    board.unmake_move(undo);
+    require(board.squares() == before_squares, "unmake restores square cache");
+    require(board.occupancy(aetherz::Color::White) == before_white_occupancy, "unmake restores color occupancy cache");
+    require(board.occupancy() == before_all_occupancy, "unmake restores full occupancy cache");
 }
 
 void test_start_position_perft()
@@ -451,9 +475,168 @@ void test_uci_go_time_controls()
     const std::string text = output.str();
     require(text.find("uciok") != std::string::npos, "UCI handshake succeeds");
     require(text.find("option name Hash") != std::string::npos, "UCI advertises Hash option");
+    require(text.find("option name UseNNUE") != std::string::npos, "UCI advertises UseNNUE option");
+    require(text.find("option name EvalFile") != std::string::npos, "UCI advertises EvalFile option");
     require(text.find("readyok") != std::string::npos, "UCI readiness succeeds");
     require(text.find("info depth") != std::string::npos, "UCI search reports iterative depth info");
     require(text.find("bestmove ") != std::string::npos, "UCI time-control search returns bestmove");
+}
+
+void test_nnue_placeholder_loads_and_falls_back_to_classical_eval()
+{
+    const std::string path = "/tmp/aetherz_dummy.nnue";
+    {
+        std::ofstream output{path};
+        output << "AETHERZ_NNUE_V1\n";
+        output << "name=test-placeholder\n";
+        output << "feature_set=halfka-v1\n";
+        output << "accumulator_size=768\n";
+        output << "hidden_size=32\n";
+    }
+
+    aetherz::nnue::NnueEvaluator evaluator;
+    std::string error;
+    require(evaluator.load(path, &error), "placeholder NNUE file loads");
+    require(error.empty(), "placeholder NNUE load has no error");
+    require(evaluator.loaded(), "placeholder NNUE reports loaded");
+    require(evaluator.metadata().name == "test-placeholder", "placeholder NNUE metadata loads");
+
+    auto board = aetherz::Board::startpos();
+    evaluator.refresh(board);
+    require(evaluator.evaluate(board) == aetherz::evaluate_side_to_move(board), "placeholder NNUE eval falls back to classical eval");
+}
+
+void test_nnue_tiny_network_uses_halfka_feature()
+{
+    const std::string path = "/tmp/aetherz_tiny_feature.nnue";
+    const int feature = aetherz::nnue::halfka_feature_index(
+        aetherz::Color::White,
+        4,
+        aetherz::Piece::WhiteQueen,
+        0);
+    {
+        std::ofstream output{path};
+        output << "AETHERZ_NNUE_V1\n";
+        output << "name=tiny-feature\n";
+        output << "feature_set=halfka-v1\n";
+        output << "accumulator_size=2\n";
+        output << "hidden_size=1\n";
+        output << "input_scale=1\n";
+        output << "hidden_scale=1\n";
+        output << "output_scale=1\n";
+        output << "accumulator_bias 0 0\n";
+        output << "feature " << feature << " 32 0\n";
+        output << "hidden1_bias 0\n";
+        output << "hidden1_weight 0 1\n";
+        output << "hidden2_bias 0\n";
+        output << "hidden2_weight 0 1\n";
+        output << "output_bias 0\n";
+        output << "output_weight 1\n";
+    }
+
+    auto active = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
+    auto inactive = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    require(active.has_value(), "active tiny NNUE FEN parses");
+    require(inactive.has_value(), "inactive tiny NNUE FEN parses");
+
+    aetherz::nnue::NnueEvaluator evaluator;
+    require(evaluator.load(path), "tiny NNUE file loads");
+    require(evaluator.ready(), "tiny NNUE file is inference-ready");
+    evaluator.refresh(*active);
+
+    require(evaluator.evaluate(*active) == 32, "tiny NNUE sees active HalfKA feature");
+    require(evaluator.evaluate(*inactive) == 0, "tiny NNUE ignores missing HalfKA feature");
+}
+
+void test_nnue_incremental_push_matches_refresh()
+{
+    const std::string path = "/tmp/aetherz_tiny_incremental.nnue";
+    const int feature = aetherz::nnue::halfka_feature_index(
+        aetherz::Color::White,
+        4,
+        aetherz::Piece::WhiteQueen,
+        0);
+    {
+        std::ofstream output{path};
+        output << "AETHERZ_NNUE_V1\n";
+        output << "name=tiny-incremental\n";
+        output << "feature_set=halfka-v1\n";
+        output << "accumulator_size=2\n";
+        output << "hidden_size=1\n";
+        output << "accumulator_bias 0 0\n";
+        output << "feature " << feature << " 32 0\n";
+        output << "hidden1_bias 0\n";
+        output << "hidden1_weight 0 1\n";
+        output << "hidden2_bias 0\n";
+        output << "hidden2_weight 0 1\n";
+        output << "output_bias 0\n";
+        output << "output_weight 1\n";
+    }
+
+    auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
+    require(board.has_value(), "incremental tiny NNUE FEN parses");
+
+    aetherz::nnue::NnueEvaluator evaluator;
+    require(evaluator.load(path), "incremental tiny NNUE file loads");
+    evaluator.refresh(*board);
+    require(evaluator.evaluate(*board) == 32, "incremental NNUE starts from active feature");
+
+    const auto move = require_legal_move(*board, "a1a2");
+    aetherz::Board::UndoState undo;
+    require(board->make_move(move, undo), "incremental NNUE test move can be made");
+    evaluator.push(*board, aetherz::nnue::dirty_move_from(*board, undo));
+    require(evaluator.evaluate(*board) == 0, "incremental NNUE removes moved feature");
+
+    evaluator.pop();
+    board->unmake_move(undo);
+    require(evaluator.evaluate(*board) == 32, "incremental NNUE pop restores previous accumulator");
+}
+
+void test_uci_accepts_nnue_options()
+{
+    const std::string path = "/tmp/aetherz_uci_dummy.nnue";
+    {
+        std::ofstream output{path};
+        output << "AETHERZ_NNUE_V1\n";
+        output << "name=uci-placeholder\n";
+    }
+
+    std::istringstream input{
+        "uci\n"
+        "setoption name UseNNUE value true\n"
+        "setoption name EvalFile value /tmp/aetherz_uci_dummy.nnue\n"
+        "isready\n"
+        "quit\n"};
+    std::ostringstream output;
+
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+
+    const std::string text = output.str();
+    require(text.find("option name UseNNUE") != std::string::npos, "UCI exposes UseNNUE");
+    require(text.find("option name EvalFile") != std::string::npos, "UCI exposes EvalFile");
+    require(text.find("info string loaded NNUE /tmp/aetherz_uci_dummy.nnue") != std::string::npos, "UCI loads placeholder NNUE");
+    require(text.find("readyok") != std::string::npos, "UCI remains ready after NNUE load");
+}
+
+void test_training_data_command_writes_bullet_text()
+{
+    const std::string path = "/tmp/aetherz_train_sample.txt";
+    std::ostringstream output;
+    std::ostringstream error;
+
+    const int status = aetherz::run_training_data_command({"traindata", path, "4", "1", "8"}, output, error);
+    require(status == 0, "training data command succeeds");
+    require(error.str().empty(), "training data command has no errors");
+
+    std::ifstream input{path};
+    std::string line;
+    int lines = 0;
+    while (std::getline(input, line)) {
+        require(line.find(" | ") != std::string::npos, "training data line uses Bullet text separators");
+        ++lines;
+    }
+    require(lines == 4, "training data command writes requested positions");
 }
 
 void test_search_benchmark_command_reports_summary()
@@ -521,6 +704,7 @@ int main()
     test_start_position_fen_round_trips();
     test_make_and_unmake_restores_state_exactly();
     test_null_move_restores_state_exactly();
+    test_board_piece_cache_tracks_moves();
     test_start_position_perft();
     test_kiwipete_perft();
     test_reference_perft_positions();
@@ -548,6 +732,11 @@ int main()
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();
     test_uci_go_time_controls();
+    test_nnue_placeholder_loads_and_falls_back_to_classical_eval();
+    test_nnue_tiny_network_uses_halfka_feature();
+    test_nnue_incremental_push_matches_refresh();
+    test_uci_accepts_nnue_options();
+    test_training_data_command_writes_bullet_text();
     test_search_benchmark_command_reports_summary();
     test_selfplay_command_reports_summary();
     test_tactics_command_passes_regressions();

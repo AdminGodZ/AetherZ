@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/board.hpp"
+#include "engine/nnue/nnue.hpp"
 
 #include <array>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace aetherz {
@@ -75,6 +77,13 @@ public:
     void set_hash_size_mb(std::size_t megabytes);
     void clear_hash();
     [[nodiscard]] std::size_t hash_size_mb() const;
+    void set_use_nnue(bool enabled);
+    [[nodiscard]] bool use_nnue() const;
+    [[nodiscard]] bool load_nnue(std::string_view path, std::string* error = nullptr);
+    void clear_nnue();
+    [[nodiscard]] bool nnue_loaded() const;
+    [[nodiscard]] bool nnue_ready() const;
+    [[nodiscard]] std::string nnue_eval_file() const;
 
 private:
     enum class MoveGeneration {
@@ -95,6 +104,8 @@ private:
     std::array<std::array<std::array<int, 64>, 64>, 64> continuation_history_{};
     std::array<int, correction_history_size> correction_history_{};
     std::vector<std::uint64_t> position_history_;
+    nnue::NnueEvaluator nnue_;
+    bool use_nnue_ = true;
 
     [[nodiscard]] SearchResult search_depth(Board& board, int depth, int alpha, int beta);
     [[nodiscard]] std::vector<Move> principal_variation(Board board, int depth) const;
@@ -147,6 +158,11 @@ private:
     void reset_position_history(const Board& board, const SearchLimits& limits);
     void push_position(const Board& board);
     void pop_position();
+    void refresh_nnue(const Board& board);
+    void push_nnue(const Board& board, const Board::UndoState& undo);
+    void push_nnue_null(const Board& board);
+    void pop_nnue();
+    [[nodiscard]] bool can_use_nnue() const;
     void clear_killers();
     void record_cutoff(const Move& move, int depth, int ply, Move previous_move);
     void update_correction_history(const Board& board, int depth, int search_score);

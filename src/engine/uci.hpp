@@ -20,7 +20,7 @@ private:
     Search search_;
     std::vector<std::uint64_t> position_history_{Board::startpos().hash()};
 
-    void handle_setoption(const std::vector<std::string>& tokens);
+    void handle_setoption(const std::vector<std::string>& tokens, std::ostream& output);
     void handle_position(const std::vector<std::string>& tokens);
     void handle_go(const std::vector<std::string>& tokens, std::ostream& output);
     void handle_perft(const std::vector<std::string>& tokens, std::ostream& output);

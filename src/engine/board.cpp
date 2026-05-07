@@ -363,16 +363,12 @@ Bitboard Board::pieces(Color color, PieceType type) const
 
 Bitboard Board::occupancy(Color color) const
 {
-    Bitboard result = 0;
-    for (int type = 0; type < 6; ++type) {
-        result |= pieces(make_piece(color, static_cast<PieceType>(type)));
-    }
-    return result;
+    return occupancies_[color_index(color)];
 }
 
 Bitboard Board::occupancy() const
 {
-    return occupancy(Color::White) | occupancy(Color::Black);
+    return occupancy_;
 }
 
 Piece Board::piece_at(int square) const
@@ -381,24 +377,12 @@ Piece Board::piece_at(int square) const
         return Piece::None;
     }
 
-    const Bitboard mask = square_bb(square);
-    for (int index = 0; index < 12; ++index) {
-        if ((pieces_[index] & mask) != 0) {
-            return static_cast<Piece>(index + 1);
-        }
-    }
-
-    return Piece::None;
+    return squares_[square];
 }
 
 int Board::king_square(Color color) const
 {
-    const Bitboard kings = pieces(color, PieceType::King);
-    if (kings == 0) {
-        return -1;
-    }
-
-    return std::countr_zero(kings);
+    return king_squares_[color_index(color)];
 }
 
 bool Board::is_square_attacked(int square, Color by_color) const
@@ -711,6 +695,10 @@ bool Board::make_move(const Move& move, UndoState& undo)
 
     undo = UndoState{
         .pieces = pieces_,
+        .squares = squares_,
+        .occupancies = occupancies_,
+        .occupancy = occupancy_,
+        .king_squares = king_squares_,
         .side_to_move = side_to_move_,
         .castling_rights = castling_rights_,
         .en_passant_square = en_passant_square_,
@@ -820,6 +808,10 @@ bool Board::make_null_move(UndoState& undo)
 
     undo = UndoState{
         .pieces = pieces_,
+        .squares = squares_,
+        .occupancies = occupancies_,
+        .occupancy = occupancy_,
+        .king_squares = king_squares_,
         .side_to_move = side_to_move_,
         .castling_rights = castling_rights_,
         .en_passant_square = en_passant_square_,
@@ -842,6 +834,10 @@ bool Board::make_null_move(UndoState& undo)
 void Board::unmake_move(const UndoState& undo)
 {
     pieces_ = undo.pieces;
+    squares_ = undo.squares;
+    occupancies_ = undo.occupancies;
+    occupancy_ = undo.occupancy;
+    king_squares_ = undo.king_squares;
     side_to_move_ = undo.side_to_move;
     castling_rights_ = undo.castling_rights;
     en_passant_square_ = undo.en_passant_square;
@@ -853,6 +849,10 @@ void Board::unmake_move(const UndoState& undo)
 void Board::clear()
 {
     pieces_.fill(0);
+    squares_.fill(Piece::None);
+    occupancies_.fill(0);
+    occupancy_ = 0;
+    king_squares_.fill(-1);
     side_to_move_ = Color::White;
     castling_rights_ = 0;
     en_passant_square_ = -1;
@@ -867,7 +867,17 @@ void Board::put_piece(Piece piece, int square)
         return;
     }
 
-    pieces_[piece_index(piece)] |= square_bb(square);
+    clear_square(square);
+
+    const Bitboard mask = square_bb(square);
+    pieces_[piece_index(piece)] |= mask;
+    squares_[square] = piece;
+    occupancies_[color_index(piece_color(piece))] |= mask;
+    occupancy_ |= mask;
+
+    if (piece_type(piece) == PieceType::King) {
+        king_squares_[color_index(piece_color(piece))] = square;
+    }
 }
 
 void Board::remove_piece(Piece piece, int square)
@@ -876,7 +886,21 @@ void Board::remove_piece(Piece piece, int square)
         return;
     }
 
-    pieces_[piece_index(piece)] &= ~square_bb(square);
+    const Bitboard mask = square_bb(square);
+    if ((pieces_[piece_index(piece)] & mask) == 0) {
+        return;
+    }
+
+    pieces_[piece_index(piece)] &= ~mask;
+    occupancies_[color_index(piece_color(piece))] &= ~mask;
+    occupancy_ &= ~mask;
+
+    if (squares_[square] == piece) {
+        squares_[square] = Piece::None;
+    }
+    if (piece_type(piece) == PieceType::King && king_squares_[color_index(piece_color(piece))] == square) {
+        king_squares_[color_index(piece_color(piece))] = -1;
+    }
 }
 
 void Board::clear_square(int square)
@@ -885,9 +909,19 @@ void Board::clear_square(int square)
         return;
     }
 
-    const Bitboard mask = ~square_bb(square);
-    for (auto& piece_board : pieces_) {
-        piece_board &= mask;
+    const Piece piece = squares_[square];
+    if (piece == Piece::None) {
+        return;
+    }
+
+    const Bitboard mask = square_bb(square);
+    pieces_[piece_index(piece)] &= ~mask;
+    occupancies_[color_index(piece_color(piece))] &= ~mask;
+    occupancy_ &= ~mask;
+    squares_[square] = Piece::None;
+
+    if (piece_type(piece) == PieceType::King) {
+        king_squares_[color_index(piece_color(piece))] = -1;
     }
 }
 

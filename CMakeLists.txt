@@ -17,6 +17,9 @@ add_library(aetherz_engine
     src/engine/board.cpp
     src/engine/epd.cpp
     src/engine/evaluate.cpp
+    src/engine/nnue/features.cpp
+    src/engine/nnue/network.cpp
+    src/engine/nnue/nnue.cpp
     src/engine/perft.cpp
     src/engine/search.cpp
     src/engine/see.cpp

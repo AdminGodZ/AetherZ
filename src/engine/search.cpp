@@ -238,6 +238,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     table_.new_search();
     clear_killers();
     reset_position_history(board, limits);
+    refresh_nnue(board);
 
     if (limits.move_time) {
         deadline_ = std::chrono::steady_clock::now() + *limits.move_time;
@@ -316,6 +317,41 @@ std::size_t Search::hash_size_mb() const
     return table_.size_mb();
 }
 
+void Search::set_use_nnue(bool enabled)
+{
+    use_nnue_ = enabled;
+}
+
+bool Search::use_nnue() const
+{
+    return use_nnue_;
+}
+
+bool Search::load_nnue(std::string_view path, std::string* error)
+{
+    return nnue_.load(path, error);
+}
+
+void Search::clear_nnue()
+{
+    nnue_.clear();
+}
+
+bool Search::nnue_loaded() const
+{
+    return nnue_.loaded();
+}
+
+bool Search::nnue_ready() const
+{
+    return nnue_.ready();
+}
+
+std::string Search::nnue_eval_file() const
+{
+    return nnue_.eval_file();
+}
+
 SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 {
     SearchResult result;
@@ -366,6 +402,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         }
         const bool gives_check = board.in_check(board.side_to_move());
         push_position(board);
+        push_nnue(board, undo);
 
         const int extension = tactical_extension(move, depth, 0, gives_check, see_gain);
         const int child_depth = std::max(0, depth - 1 + extension);
@@ -378,6 +415,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
                 score = -negamax(board, child_depth, 1, -beta, -alpha, move);
             }
         }
+        pop_nnue();
         pop_position();
         board.unmake_move(undo);
         searched_move = true;
@@ -532,7 +570,9 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
                 continue;
             }
             push_position(board);
+            push_nnue(board, undo);
             const int score = -negamax(board, probcut_depth, ply + 1, -probcut_beta, -probcut_beta + 1, move);
+            pop_nnue();
             pop_position();
             board.unmake_move(undo);
 
@@ -545,8 +585,10 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     if (can_try_null_move(board, depth, ply, alpha, beta)) {
         Board::UndoState undo;
         if (board.make_null_move(undo)) {
+            push_nnue_null(board);
             const int reduction = 2 + depth / 4;
             const int score = -negamax(board, depth - 1 - reduction, ply + 1, -beta, -beta + 1, {});
+            pop_nnue();
             board.unmake_move(undo);
 
             if (score >= beta) {
@@ -595,6 +637,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
 
         push_position(board);
+        push_nnue(board, undo);
 
         ++searched_moves;
         const int extension = tactical_extension(move, depth, ply, gives_check, see_gain);
@@ -616,6 +659,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
                 score = -negamax(board, full_depth, ply + 1, -beta, -alpha, move);
             }
         }
+        pop_nnue();
         pop_position();
         board.unmake_move(undo);
         searched_move = true;
@@ -696,10 +740,12 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
             continue;
         }
         push_position(board);
+        push_nnue(board, undo);
         searched_move = true;
 
         const int next_quiet_check_depth = !in_check && !is_tactical(move) ? quiet_check_depth - 1 : 0;
         const int score = -quiescence(board, ply + 1, -beta, -alpha, next_quiet_check_depth);
+        pop_nnue();
         pop_position();
         board.unmake_move(undo);
 
@@ -723,6 +769,10 @@ int Search::evaluate(const Board& board) const
 
 int Search::raw_evaluate(const Board& board) const
 {
+    if (can_use_nnue()) {
+        return nnue_.evaluate(board);
+    }
+
     return evaluate_side_to_move(board);
 }
 
@@ -1071,6 +1121,39 @@ void Search::pop_position()
     if (!position_history_.empty()) {
         position_history_.pop_back();
     }
+}
+
+void Search::refresh_nnue(const Board& board)
+{
+    if (can_use_nnue()) {
+        nnue_.refresh(board);
+    }
+}
+
+void Search::push_nnue(const Board& board, const Board::UndoState& undo)
+{
+    if (can_use_nnue()) {
+        nnue_.push(board, nnue::dirty_move_from(board, undo));
+    }
+}
+
+void Search::push_nnue_null(const Board& board)
+{
+    if (can_use_nnue()) {
+        nnue_.push(board, nnue::DirtyMove{});
+    }
+}
+
+void Search::pop_nnue()
+{
+    if (can_use_nnue()) {
+        nnue_.pop();
+    }
+}
+
+bool Search::can_use_nnue() const
+{
+    return use_nnue_ && nnue_.ready();
 }
 
 void Search::clear_killers()
