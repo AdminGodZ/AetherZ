@@ -66,6 +66,13 @@ int main(int argc, char** argv)
             std::cerr);
     }
 
+    if (args.size() > 1 && args[1] == "traindata") {
+        return aetherz::run_training_data_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
+    }
+
     aetherz::UciEngine engine;
     engine.loop(std::cin, std::cout);
     return 0;

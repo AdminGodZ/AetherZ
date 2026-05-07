@@ -60,6 +60,18 @@ std::chrono::milliseconds safe_move_time(int milliseconds)
     return std::chrono::milliseconds{std::max(1, milliseconds - move_overhead_ms)};
 }
 
+std::optional<bool> parse_bool(std::string_view value)
+{
+    if (value == "true" || value == "1" || value == "on") {
+        return true;
+    }
+    if (value == "false" || value == "0" || value == "off") {
+        return false;
+    }
+
+    return std::nullopt;
+}
+
 SearchLimits parse_search_limits(const std::vector<std::string>& tokens, Color side_to_move)
 {
     constexpr int default_depth = 4;
@@ -146,11 +158,13 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
             output << "id name AetherZ\n";
             output << "id author admingod\n";
             output << "option name Hash type spin default 32 min 1 max 1024\n";
+            output << "option name UseNNUE type check default true\n";
+            output << "option name EvalFile type string default\n";
             output << "uciok\n";
         } else if (command == "isready") {
             output << "readyok\n";
         } else if (command == "setoption") {
-            handle_setoption(tokens);
+            handle_setoption(tokens, output);
         } else if (command == "ucinewgame") {
             board_ = Board::startpos();
             reset_position_history();
@@ -187,7 +201,7 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
     }
 }
 
-void UciEngine::handle_setoption(const std::vector<std::string>& tokens)
+void UciEngine::handle_setoption(const std::vector<std::string>& tokens, std::ostream& output)
 {
     std::vector<std::string> name_parts;
     std::vector<std::string> value_parts;
@@ -209,14 +223,33 @@ void UciEngine::handle_setoption(const std::vector<std::string>& tokens)
 
     const std::string name = join_words(name_parts, 0, name_parts.size());
     const std::string value = join_words(value_parts, 0, value_parts.size());
-    if (name != "Hash" || value.empty()) {
+    if (name.empty()) {
         return;
     }
 
-    try {
-        const int megabytes = std::clamp(std::stoi(value), 1, 1024);
-        search_.set_hash_size_mb(static_cast<std::size_t>(megabytes));
-    } catch (...) {
+    if (name == "Hash" && !value.empty()) {
+        try {
+            const int megabytes = std::clamp(std::stoi(value), 1, 1024);
+            search_.set_hash_size_mb(static_cast<std::size_t>(megabytes));
+        } catch (...) {
+        }
+    } else if (name == "UseNNUE" && !value.empty()) {
+        const auto parsed = parse_bool(value);
+        if (parsed) {
+            search_.set_use_nnue(*parsed);
+        }
+    } else if (name == "EvalFile") {
+        if (value.empty()) {
+            search_.clear_nnue();
+            return;
+        }
+
+        std::string error;
+        if (search_.load_nnue(value, &error)) {
+            output << "info string loaded NNUE " << search_.nnue_eval_file() << '\n';
+        } else {
+            output << "info string failed to load NNUE: " << error << '\n';
+        }
     }
 }
 

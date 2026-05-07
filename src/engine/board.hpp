@@ -18,6 +18,10 @@ public:
 
     struct UndoState {
         std::array<Bitboard, 12> pieces{};
+        std::array<Piece, 64> squares{};
+        std::array<Bitboard, 2> occupancies{};
+        Bitboard occupancy = 0;
+        std::array<int, 2> king_squares{};
         Color side_to_move = Color::White;
         std::uint8_t castling_rights = 0;
         int en_passant_square = -1;
@@ -41,6 +45,7 @@ public:
     [[nodiscard]] int fullmove_number() const { return fullmove_number_; }
     [[nodiscard]] std::uint64_t hash() const { return hash_; }
     [[nodiscard]] bool can_castle(Color color, bool kingside) const;
+    [[nodiscard]] const std::array<Piece, 64>& squares() const { return squares_; }
 
     [[nodiscard]] Bitboard pieces(Piece piece) const;
     [[nodiscard]] Bitboard pieces(Color color, PieceType type) const;
@@ -69,6 +74,10 @@ private:
     };
 
     std::array<Bitboard, 12> pieces_{};
+    std::array<Piece, 64> squares_{};
+    std::array<Bitboard, 2> occupancies_{};
+    Bitboard occupancy_ = 0;
+    std::array<int, 2> king_squares_{};
     Color side_to_move_ = Color::White;
     std::uint8_t castling_rights_ = 0;
     int en_passant_square_ = -1;
