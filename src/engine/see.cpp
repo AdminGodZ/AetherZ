@@ -96,6 +96,22 @@ std::optional<SelectedAttacker> least_valuable_attacker(
     return std::nullopt;
 }
 
+// Whether the move would leave the mover's own king attacked.
+bool leaves_king_in_check(const Board& board, const Move& move)
+{
+    const Color us = board.side_to_move();
+    const int captured = captured_square(board, move);
+    Bitboard occupancy = (board.occupancy() & ~square_bb(move.from) & ~square_bb(captured)) | square_bb(move.to);
+    const int king = piece_type(board.piece_at(move.from)) == PieceType::King ? move.to : board.king_square(us);
+    if (!is_valid_square(king)) {
+        return false;
+    }
+
+    // The captured piece no longer attacks anything.
+    const Bitboard attackers = attackers_to(board, king, opposite(us), occupancy) & ~square_bb(captured);
+    return attackers != 0;
+}
+
 } // namespace
 
 int static_exchange_evaluation(const Board& board, const Move& move)
@@ -109,9 +125,7 @@ int static_exchange_evaluation(const Board& board, const Move& move)
         return 0;
     }
 
-    Board next = board;
-    Board::UndoState undo;
-    if (!next.make_move(move, undo) || next.in_check(board.side_to_move())) {
+    if (leaves_king_in_check(board, move)) {
         return 0;
     }
 

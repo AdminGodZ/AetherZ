@@ -217,13 +217,9 @@ int mirror_square(int square)
     return square ^ 56;
 }
 
-Bitboard file_mask(int file)
+constexpr Bitboard file_mask(int file)
 {
-    Bitboard mask = 0;
-    for (int rank = 0; rank < 8; ++rank) {
-        mask |= square_bb(rank * 8 + file);
-    }
-    return mask;
+    return Bitboard{0x0101010101010101ULL} << file;
 }
 
 int advancement(Color color, int square)
@@ -252,28 +248,41 @@ struct AttackMaps {
     std::array<Bitboard, 2> pawn_attacks{};
 };
 
+// Squares on the same and adjacent files strictly in front of a pawn: the
+// pawn is passed when no enemy pawn stands on them.
+constexpr std::array<std::array<Bitboard, 64>, 2> passed_pawn_masks = [] {
+    std::array<std::array<Bitboard, 64>, 2> masks{};
+    for (int square = 0; square < 64; ++square) {
+        const int file = file_of(square);
+        const int rank = rank_of(square);
+        Bitboard files = file_mask(file);
+        if (file > 0) {
+            files |= file_mask(file - 1);
+        }
+        if (file < 7) {
+            files |= file_mask(file + 1);
+        }
+
+        Bitboard ahead_white = 0;
+        Bitboard ahead_black = 0;
+        for (int other = 0; other < 8; ++other) {
+            const Bitboard rank_squares = Bitboard{0xFF} << (8 * other);
+            if (other > rank) {
+                ahead_white |= rank_squares;
+            }
+            if (other < rank) {
+                ahead_black |= rank_squares;
+            }
+        }
+        masks[0][square] = files & ahead_white;
+        masks[1][square] = files & ahead_black;
+    }
+    return masks;
+}();
+
 bool is_passed_pawn(const Board& board, Color color, int square)
 {
-    const Color enemy = opposite(color);
-    const int file = file_of(square);
-    const int rank = rank_of(square);
-    Bitboard enemy_pawns = board.pieces(enemy, PieceType::Pawn);
-
-    while (enemy_pawns != 0) {
-        const int enemy_square = pop_lsb(enemy_pawns);
-        if (std::abs(file_of(enemy_square) - file) > 1) {
-            continue;
-        }
-
-        if (color == Color::White && rank_of(enemy_square) > rank) {
-            return false;
-        }
-        if (color == Color::Black && rank_of(enemy_square) < rank) {
-            return false;
-        }
-    }
-
-    return true;
+    return (passed_pawn_masks[color_index(color)][square] & board.pieces(opposite(color), PieceType::Pawn)) == 0;
 }
 
 EvalScore evaluate_pawns(const Board& board, Color color)

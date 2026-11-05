@@ -31,21 +31,32 @@ std::vector<int> active_halfka_features(const Board& board, Color perspective)
 DirtyMove dirty_move_from(const Board& board, const Board::UndoState& undo)
 {
     DirtyMove dirty;
-    const auto& after = board.squares();
+    if (undo.null_move) {
+        return dirty;
+    }
 
-    for (int square = 0; square < 64; ++square) {
-        const Piece before_piece = undo.squares[square];
-        const Piece after_piece = after[square];
-        if (before_piece == after_piece) {
-            continue;
-        }
+    auto remove = [&](Piece piece, int square) {
+        dirty.removed[dirty.removed_count++] = PieceSquare{.piece = piece, .square = square};
+    };
+    auto add = [&](Piece piece, int square) {
+        dirty.added[dirty.added_count++] = PieceSquare{.piece = piece, .square = square};
+    };
 
-        if (before_piece != Piece::None && dirty.removed_count < static_cast<int>(dirty.removed.size())) {
-            dirty.removed[dirty.removed_count++] = PieceSquare{.piece = before_piece, .square = square};
-        }
-        if (after_piece != Piece::None && dirty.added_count < static_cast<int>(dirty.added.size())) {
-            dirty.added[dirty.added_count++] = PieceSquare{.piece = after_piece, .square = square};
-        }
+    const Move& move = undo.move;
+    remove(undo.moved, move.from);
+    if (undo.captured != Piece::None) {
+        remove(undo.captured, undo.captured_square);
+    }
+    add(board.piece_at(move.to), move.to);
+
+    if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {
+        const bool white = piece_color(undo.moved) == Color::White;
+        const bool kingside = move.flag == MoveFlag::KingCastle;
+        const int rook_from = white ? (kingside ? 7 : 0) : (kingside ? 63 : 56);
+        const int rook_to = white ? (kingside ? 5 : 3) : (kingside ? 61 : 59);
+        const Piece rook = make_piece(white ? Color::White : Color::Black, PieceType::Rook);
+        remove(rook, rook_from);
+        add(rook, rook_to);
     }
 
     return dirty;

@@ -10,6 +10,7 @@
 #include "engine/types.hpp"
 #include "engine/uci.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -106,6 +107,34 @@ void test_board_piece_cache_tracks_moves()
     require(board.squares() == before_squares, "unmake restores square cache");
     require(board.occupancy(aetherz::Color::White) == before_white_occupancy, "unmake restores color occupancy cache");
     require(board.occupancy() == before_all_occupancy, "unmake restores full occupancy cache");
+}
+
+void test_incremental_hash_matches_full_hash()
+{
+    // Walk several games of pseudo-random legal moves, covering castling,
+    // en passant and promotions, and compare against a hash rebuilt from FEN.
+    const std::array<std::string_view, 3> fens{
+        aetherz::Board::start_fen,
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+    };
+
+    std::uint64_t state = 12345;
+    for (const auto fen : fens) {
+        auto board = *aetherz::Board::from_fen(fen);
+        for (int ply = 0; ply < 200; ++ply) {
+            const auto moves = board.generate_legal_moves();
+            if (moves.empty()) {
+                break;
+            }
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            aetherz::Board::UndoState undo;
+            require(board.make_move(moves[(state >> 33) % moves.size()], undo), "random legal move is playable");
+
+            const auto rebuilt = aetherz::Board::from_fen(board.to_fen());
+            require(rebuilt.has_value() && rebuilt->hash() == board.hash(), "incremental hash matches rebuilt hash");
+        }
+    }
 }
 
 void test_start_position_perft()
@@ -442,7 +471,8 @@ void test_search_scores_fifty_move_draw()
 
 void test_search_scores_repetition_draw()
 {
-    auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
+    // The halfmove clock covers the repeated history below.
+    auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 8 5");
 
     require(board.has_value(), "repetition draw test FEN parses");
 
@@ -811,6 +841,7 @@ int main()
     test_make_and_unmake_restores_state_exactly();
     test_null_move_restores_state_exactly();
     test_board_piece_cache_tracks_moves();
+    test_incremental_hash_matches_full_hash();
     test_start_position_perft();
     test_kiwipete_perft();
     test_reference_perft_positions();
