@@ -78,9 +78,9 @@ int promotion_score(PieceType type)
     return piece_value(type);
 }
 
-int reverse_futility_margin(int depth)
+int reverse_futility_margin(int depth, bool improving)
 {
-    return 90 * depth;
+    return 80 * (depth - (improving ? 1 : 0));
 }
 
 int futility_margin(int depth)
@@ -422,6 +422,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
     result.depth = depth;
 
     const bool in_check = board.in_check(board.side_to_move());
+    static_evals_[0] = in_check ? no_eval : evaluate(board);
     const auto entry = table_.probe(board.hash());
     MovePicker picker = ordered_moves(board, entry ? std::optional<Move>{entry->best_move} : std::nullopt, 0);
     MoveList moves;
@@ -618,6 +619,13 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
     }
 
+    // Static evaluation history along the current line: a position whose
+    // eval improved over two plies ago is pruned less aggressively.
+    const bool pv_node = original_beta - original_alpha > 1;
+    static_evals_[ply] = in_check ? no_eval : current_static_eval();
+    const bool improving = !in_check && ply >= 2 && static_evals_[ply - 2] != no_eval
+        && static_evals_[ply] > static_evals_[ply - 2];
+
     if (!tt_move && depth >= 5 && ply > 0 && !in_check && beta == alpha + 1) {
         --depth;
     }
@@ -630,11 +638,9 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     }
 
     if (!in_check
-        && depth <= 3
-        && beta < mate_score - 1000
-        && beta > -mate_score + 1000
-        && can_prune_reverse_futility(depth, ply, beta, in_check, current_static_eval())) {
-        return current_static_eval() - reverse_futility_margin(depth);
+        && !pv_node
+        && can_prune_reverse_futility(depth, ply, beta, in_check, improving, current_static_eval())) {
+        return current_static_eval() - reverse_futility_margin(depth, improving);
     }
 
     if (can_try_probcut(depth, ply, beta, in_check, current_static_eval())) {
@@ -664,11 +670,13 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
     }
 
-    if (can_try_null_move(board, depth, ply, alpha, beta)) {
+    if (previous_move.is_valid()
+        && current_static_eval() >= beta
+        && can_try_null_move(board, depth, ply, alpha, beta)) {
         Board::UndoState undo;
         if (board.make_null_move(undo)) {
             push_nnue_null(board);
-            const int reduction = 2 + depth / 4;
+            const int reduction = 3 + depth / 3 + std::min((current_static_eval() - beta) / 200, 3);
             const int score = -negamax(board, depth - 1 - reduction, ply + 1, -beta, -beta + 1, {});
             pop_nnue();
             board.unmake_move(undo);
@@ -1064,15 +1072,15 @@ bool Search::can_try_null_move(const Board& board, int depth, int ply, int alpha
     return has_non_pawn_material(board, board.side_to_move());
 }
 
-bool Search::can_prune_reverse_futility(int depth, int ply, int beta, bool in_check, int static_eval) const
+bool Search::can_prune_reverse_futility(int depth, int ply, int beta, bool in_check, bool improving, int static_eval) const
 {
-    if (depth > 3 || ply <= 0 || in_check) {
+    if (depth > 8 || ply <= 0 || in_check) {
         return false;
     }
-    if (beta >= mate_score - 1000 || beta <= -mate_score + 1000) {
+    if (beta >= mate_bound || beta <= -mate_bound) {
         return false;
     }
-    return static_eval - reverse_futility_margin(depth) >= beta;
+    return static_eval - reverse_futility_margin(depth, improving) >= beta;
 }
 
 bool Search::can_prune_futility(

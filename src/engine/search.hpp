@@ -167,6 +167,8 @@ private:
     // Static evaluation corrections keyed by pawn structure and side to move.
     std::array<std::array<int, correction_history_size>, 2> correction_history_{};
     std::vector<std::uint64_t> position_history_;
+    static constexpr int no_eval = -1'000'000;
+    std::array<int, max_ply + 1> static_evals_{};
     nnue::NnueEvaluator nnue_;
     bool use_nnue_ = true;
 
@@ -191,7 +193,13 @@ private:
     [[nodiscard]] bool can_try_razoring(int depth, int ply, int alpha, int beta, bool in_check, int static_eval) const;
     [[nodiscard]] bool can_try_probcut(int depth, int ply, int beta, bool in_check, int static_eval) const;
     [[nodiscard]] bool can_try_null_move(const Board& board, int depth, int ply, int alpha, int beta) const;
-    [[nodiscard]] bool can_prune_reverse_futility(int depth, int ply, int beta, bool in_check, int static_eval) const;
+    [[nodiscard]] bool can_prune_reverse_futility(
+        int depth,
+        int ply,
+        int beta,
+        bool in_check,
+        bool improving,
+        int static_eval) const;
     [[nodiscard]] bool can_prune_futility(
         const Move& move,
         int depth,
