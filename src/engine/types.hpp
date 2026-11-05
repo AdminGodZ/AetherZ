@@ -57,7 +57,7 @@ struct Move {
     PieceType promotion = PieceType::None;
     MoveFlag flag = MoveFlag::Quiet;
 
-    [[nodiscard]] bool is_valid() const;
+    [[nodiscard]] constexpr bool is_valid() const;
 };
 
 [[nodiscard]] constexpr Color opposite(Color color)
@@ -80,6 +80,11 @@ struct Move {
     return square >= 0 && square < 64;
 }
 
+constexpr bool Move::is_valid() const
+{
+    return is_valid_square(from) && is_valid_square(to) && from != to;
+}
+
 [[nodiscard]] constexpr int file_of(int square)
 {
     return square & 7;
@@ -95,10 +100,34 @@ struct Move {
     return Bitboard{1} << square;
 }
 
-[[nodiscard]] Piece make_piece(Color color, PieceType type);
-[[nodiscard]] Color piece_color(Piece piece);
-[[nodiscard]] PieceType piece_type(Piece piece);
-[[nodiscard]] int piece_index(Piece piece);
+[[nodiscard]] constexpr Piece make_piece(Color color, PieceType type)
+{
+    if (type == PieceType::None) {
+        return Piece::None;
+    }
+
+    const int offset = color == Color::White ? 1 : 7;
+    return static_cast<Piece>(offset + piece_type_index(type));
+}
+
+[[nodiscard]] constexpr Color piece_color(Piece piece)
+{
+    return static_cast<int>(piece) >= static_cast<int>(Piece::BlackPawn) ? Color::Black : Color::White;
+}
+
+[[nodiscard]] constexpr PieceType piece_type(Piece piece)
+{
+    if (piece == Piece::None) {
+        return PieceType::None;
+    }
+
+    return static_cast<PieceType>((static_cast<int>(piece) - 1) % 6);
+}
+
+[[nodiscard]] constexpr int piece_index(Piece piece)
+{
+    return static_cast<int>(piece) - 1;
+}
 [[nodiscard]] char piece_to_fen(Piece piece);
 [[nodiscard]] std::optional<Piece> piece_from_fen(char value);
 

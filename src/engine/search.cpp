@@ -56,6 +56,11 @@ int piece_value(PieceType type)
     return middlegame_piece_value(type);
 }
 
+int move_key(const Move& move)
+{
+    return (move.from << 9) | (move.to << 3) | static_cast<int>(move.promotion);
+}
+
 int capture_score(const Board& board, const Move& move)
 {
     const Piece attacker = board.piece_at(move.from);
@@ -410,7 +415,11 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
     const bool in_check = board.in_check(board.side_to_move());
     const auto entry = table_.probe(board.hash());
-    auto moves = ordered_moves(board, entry ? std::optional<Move>{entry->best_move} : std::nullopt, 0);
+    MovePicker picker = ordered_moves(board, entry ? std::optional<Move>{entry->best_move} : std::nullopt, 0);
+    MoveList moves;
+    while (const auto move = picker.next()) {
+        moves.push_back(*move);
+    }
     if (moves.empty()) {
         result.nodes = nodes_;
         result.tt_hits = tt_hits_;
@@ -615,7 +624,9 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     if (can_try_probcut(depth, ply, beta, in_check, current_static_eval())) {
         const int probcut_beta = beta + probcut_margin(depth);
         const int probcut_depth = std::max(0, depth - 4);
-        for (const Move& move : ordered_moves(board, tt_move, ply, previous_move, MoveGeneration::Tactical)) {
+        MovePicker probcut_moves = ordered_moves(board, tt_move, ply, previous_move, MoveGeneration::Tactical);
+        while (const auto next_move = probcut_moves.next()) {
+            const Move& move = *next_move;
             if (is_capture_like(move) && static_exchange_evaluation(board, move) < 0) {
                 continue;
             }
@@ -652,7 +663,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
     }
 
-    const auto moves = ordered_moves(board, tt_move, ply, previous_move);
+    MovePicker moves = ordered_moves(board, tt_move, ply, previous_move);
     if (moves.empty()) {
         if (in_check) {
             return -mate_score + ply;
@@ -664,7 +675,8 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     Move best_move;
     bool searched_move = false;
     int searched_moves = 0;
-    for (const Move& move : moves) {
+    while (const auto next_move = moves.next()) {
+        const Move& move = *next_move;
         if (should_stop()) {
             break;
         }
@@ -780,7 +792,9 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     bool searched_move = false;
     const bool include_quiet_checks = !in_check && quiet_check_depth > 0;
     const MoveGeneration generation = in_check || include_quiet_checks ? MoveGeneration::All : MoveGeneration::Tactical;
-    for (const Move& move : ordered_moves(board, std::nullopt, ply, {}, generation)) {
+    MovePicker moves = ordered_moves(board, std::nullopt, ply, {}, generation);
+    while (const auto next_move = moves.next()) {
+        const Move& move = *next_move;
         if (should_stop()) {
             break;
         }
@@ -840,114 +854,99 @@ int Search::correction(const Board& board) const
     return correction_history_[board.hash() % correction_history_.size()];
 }
 
-std::vector<Move> Search::ordered_moves(
+std::optional<Move> MovePicker::next()
+{
+    if (index_ >= count_) {
+        return std::nullopt;
+    }
+
+    // Stage first, then score, then the move itself so the order does not
+    // depend on the order in which moves were generated.
+    auto better = [](const ScoredMove& left, const ScoredMove& right) {
+        if (left.stage != right.stage) {
+            return left.stage < right.stage;
+        }
+        if (left.score != right.score) {
+            return left.score > right.score;
+        }
+        return left.key < right.key;
+    };
+
+    // The first move often causes a cutoff, so only select it; sort the rest
+    // once a second move is actually needed.
+    if (index_ == 0) {
+        std::size_t best = 0;
+        for (std::size_t index = 1; index < count_; ++index) {
+            if (better(moves_[index], moves_[best])) {
+                best = index;
+            }
+        }
+        std::swap(moves_[0], moves_[best]);
+    } else if (index_ == 1) {
+        std::sort(moves_.begin() + 1, moves_.begin() + static_cast<std::ptrdiff_t>(count_), better);
+    }
+    return moves_[index_++].move;
+}
+
+MovePicker Search::ordered_moves(
     const Board& board,
     std::optional<Move> tt_move,
     int ply,
     Move previous_move,
     MoveGeneration generation) const
 {
-    auto moves = generation == MoveGeneration::Tactical
+    const MoveList moves = generation == MoveGeneration::Tactical
         ? board.generate_pseudo_legal_tactical_moves()
         : board.generate_pseudo_legal_moves();
 
-    struct ScoredMove {
-        Move move;
-        int score = 0;
-    };
-    struct MoveStages {
-        std::vector<ScoredMove> tt;
-        std::vector<ScoredMove> promotions;
-        std::vector<ScoredMove> good_captures;
-        std::vector<ScoredMove> priority_quiets;
-        std::vector<ScoredMove> quiets;
-        std::vector<ScoredMove> bad_captures;
+    enum Stage : int {
+        TtMove,
+        Promotions,
+        GoodCaptures,
+        PriorityQuiets,
+        Quiets,
+        BadCaptures,
     };
 
-    MoveStages stages;
-    stages.tt.reserve(1);
-    stages.promotions.reserve(4);
-    stages.good_captures.reserve(moves.size());
-    stages.priority_quiets.reserve(moves.size());
-    stages.quiets.reserve(moves.size());
-    stages.bad_captures.reserve(moves.size());
-
+    MovePicker picker;
     for (const Move& move : moves) {
+        MovePicker::ScoredMove entry{.move = move, .stage = Quiets, .score = 0, .key = move_key(move)};
+
         if (tt_move && same_move(move, *tt_move)) {
-            stages.tt.push_back(ScoredMove{.move = move, .score = 0});
-            continue;
-        }
-
-        if (move.flag == MoveFlag::Promotion || move.flag == MoveFlag::PromotionCapture) {
-            int score = promotion_score(move.promotion);
+            entry.stage = TtMove;
+        } else if (move.flag == MoveFlag::Promotion || move.flag == MoveFlag::PromotionCapture) {
+            entry.stage = Promotions;
+            entry.score = promotion_score(move.promotion);
             if (is_capture_like(move)) {
-                score += capture_score(board, move);
+                entry.score += capture_score(board, move);
             }
-            stages.promotions.push_back(ScoredMove{.move = move, .score = score});
-            continue;
-        }
-
-        if (is_capture_like(move)) {
+        } else if (is_capture_like(move)) {
             const int see = static_exchange_evaluation(board, move);
-            const int score = see * 8 + capture_score(board, move);
-            if (see >= 0) {
-                stages.good_captures.push_back(ScoredMove{.move = move, .score = score});
-            } else {
-                stages.bad_captures.push_back(ScoredMove{.move = move, .score = score});
-            }
-            continue;
-        }
-
-        int score = 0;
-        if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {
-            score += 750'000;
-        }
-
-        if (ply >= 0 && ply < max_ply) {
-            if (same_move(move, killer_moves_[ply][0])) {
-                score += 700'000;
-            } else if (same_move(move, killer_moves_[ply][1])) {
-                score += 650'000;
-            }
-        }
-
-        if (move.from >= 0 && move.to >= 0) {
-            score += quiet_history_score(move, previous_move);
-        }
-
-        if (score >= 650'000) {
-            stages.priority_quiets.push_back(ScoredMove{.move = move, .score = score});
+            entry.stage = see >= 0 ? GoodCaptures : BadCaptures;
+            entry.score = see * 8 + capture_score(board, move);
         } else {
-            stages.quiets.push_back(ScoredMove{.move = move, .score = score});
+            int score = 0;
+            if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {
+                score += 750'000;
+            }
+
+            if (ply >= 0 && ply < max_ply) {
+                if (same_move(move, killer_moves_[ply][0])) {
+                    score += 700'000;
+                } else if (same_move(move, killer_moves_[ply][1])) {
+                    score += 650'000;
+                }
+            }
+
+            score += quiet_history_score(move, previous_move);
+            entry.stage = score >= 650'000 ? PriorityQuiets : Quiets;
+            entry.score = score;
         }
+
+        picker.add(entry);
     }
 
-    auto sort_stage = [](std::vector<ScoredMove>& stage) {
-        std::stable_sort(stage.begin(), stage.end(), [](const ScoredMove& left, const ScoredMove& right) {
-            return left.score > right.score;
-        });
-    };
-    auto append_stage = [&moves](std::size_t& index, const std::vector<ScoredMove>& stage) {
-        for (const ScoredMove& scored : stage) {
-            moves[index++] = scored.move;
-        }
-    };
-
-    sort_stage(stages.promotions);
-    sort_stage(stages.good_captures);
-    sort_stage(stages.priority_quiets);
-    sort_stage(stages.quiets);
-    sort_stage(stages.bad_captures);
-
-    std::size_t index = 0;
-    append_stage(index, stages.tt);
-    append_stage(index, stages.promotions);
-    append_stage(index, stages.good_captures);
-    append_stage(index, stages.priority_quiets);
-    append_stage(index, stages.quiets);
-    append_stage(index, stages.bad_captures);
-
-    return moves;
+    return picker;
 }
 
 bool Search::should_stop(bool force_check)
@@ -1146,12 +1145,14 @@ int Search::late_move_reduction(
 
 bool Search::is_draw(const Board& board) const
 {
-    return board.halfmove_clock() >= 100 || repetition_count(board.hash()) >= 3;
+    return board.halfmove_clock() >= 100 || repetition_count(board) >= 3;
 }
 
-int Search::repetition_count(std::uint64_t hash) const
+int Search::repetition_count(const Board& board) const
 {
-    return static_cast<int>(std::count(position_history_.begin(), position_history_.end(), hash));
+    // Positions before the last capture or pawn move cannot repeat.
+    const auto window = std::min<std::size_t>(position_history_.size(), static_cast<std::size_t>(board.halfmove_clock()) + 1);
+    return static_cast<int>(std::count(position_history_.end() - static_cast<std::ptrdiff_t>(window), position_history_.end(), board.hash()));
 }
 
 int Search::continuation_score(const Move& move, Move previous_move) const

@@ -5,42 +5,6 @@
 
 namespace aetherz {
 
-bool Move::is_valid() const
-{
-    return is_valid_square(from) && is_valid_square(to) && from != to;
-}
-
-Piece make_piece(Color color, PieceType type)
-{
-    if (type == PieceType::None) {
-        return Piece::None;
-    }
-
-    const int offset = color == Color::White ? 1 : 7;
-    return static_cast<Piece>(offset + piece_type_index(type));
-}
-
-Color piece_color(Piece piece)
-{
-    const int value = static_cast<int>(piece);
-    return value >= static_cast<int>(Piece::BlackPawn) ? Color::Black : Color::White;
-}
-
-PieceType piece_type(Piece piece)
-{
-    if (piece == Piece::None) {
-        return PieceType::None;
-    }
-
-    const int value = static_cast<int>(piece);
-    return static_cast<PieceType>((value - 1) % 6);
-}
-
-int piece_index(Piece piece)
-{
-    return static_cast<int>(piece) - 1;
-}
-
 char piece_to_fen(Piece piece)
 {
     switch (piece) {

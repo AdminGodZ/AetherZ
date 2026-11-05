@@ -95,6 +95,28 @@ private:
     std::uint8_t generation_ = 1;
 };
 
+// Hands out scored moves best-first. The best move is selected on its own and
+// the rest are only sorted when the first move does not cause a cutoff.
+class MovePicker {
+public:
+    struct ScoredMove {
+        Move move;
+        int stage = 0;
+        int score = 0;
+        int key = 0;
+    };
+
+    void add(const ScoredMove& move) { moves_[count_++] = move; }
+    [[nodiscard]] std::size_t size() const { return count_; }
+    [[nodiscard]] bool empty() const { return count_ == 0; }
+    [[nodiscard]] std::optional<Move> next();
+
+private:
+    std::array<ScoredMove, MoveList::capacity> moves_;
+    std::size_t count_ = 0;
+    std::size_t index_ = 0;
+};
+
 class Search {
 public:
     Search();
@@ -154,7 +176,7 @@ private:
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] int raw_evaluate(const Board& board) const;
     [[nodiscard]] int correction(const Board& board) const;
-    [[nodiscard]] std::vector<Move> ordered_moves(
+    [[nodiscard]] MovePicker ordered_moves(
         const Board& board,
         std::optional<Move> tt_move,
         int ply,
@@ -193,7 +215,7 @@ private:
         bool gives_check,
         Move previous_move) const;
     [[nodiscard]] bool is_draw(const Board& board) const;
-    [[nodiscard]] int repetition_count(std::uint64_t hash) const;
+    [[nodiscard]] int repetition_count(const Board& board) const;
     [[nodiscard]] int continuation_score(const Move& move, Move previous_move) const;
     [[nodiscard]] int quiet_history_score(const Move& move, Move previous_move) const;
     void reset_position_history(const Board& board, const SearchLimits& limits);
