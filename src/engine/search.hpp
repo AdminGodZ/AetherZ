@@ -206,9 +206,13 @@ private:
     std::optional<std::uint64_t> max_nodes_;
     std::array<std::array<Move, 2>, max_ply> killer_moves_{};
     std::array<std::array<int, 64>, 64> history_{};
-    std::array<std::array<std::array<int, 64>, 64>, 64> continuation_history_{};
+    // The two large tables live on the heap so that a Search object is small
+    // enough for any thread's stack (the main thread gets 1-2 MB on Windows).
+    using ContinuationHistory = std::array<std::array<std::array<int, 64>, 64>, 64>;
+    std::unique_ptr<ContinuationHistory> continuation_history_ = std::make_unique<ContinuationHistory>();
     // Static evaluation corrections keyed by pawn structure and side to move.
-    std::array<std::array<int, correction_history_size>, 2> correction_history_{};
+    using CorrectionHistory = std::array<std::array<int, correction_history_size>, 2>;
+    std::unique_ptr<CorrectionHistory> correction_history_ = std::make_unique<CorrectionHistory>();
     std::vector<std::uint64_t> position_history_;
     static constexpr int no_eval = -1'000'000;
     std::array<int, max_ply + 1> static_evals_{};
