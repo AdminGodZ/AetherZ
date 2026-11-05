@@ -1,55 +1,49 @@
 #pragma once
 
-#include "engine/nnue/accumulator.hpp"
-#include "engine/types.hpp"
-
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <vector>
 
 namespace aetherz::nnue {
 
-inline constexpr std::string_view native_network_magic = "AETHERZ_NNUE_V1";
+// (768 -> hidden_size)x2 -> 1 with SCReLU, as trained by Bullet's `simple`
+// example. The quantisation constants must match the ones used for training.
+inline constexpr int input_size = 768;
+inline constexpr int hidden_size = 256;
+inline constexpr int qa = 255;
+inline constexpr int qb = 64;
+inline constexpr int eval_scale = 400;
 
-struct NnueNetworkMetadata {
-    std::string name = "unnamed";
-    std::string feature_set = "halfka-v1";
-    int accumulator_size = 768;
-    int hidden_size = 32;
-    int input_scale = 1;
-    int hidden_scale = 1;
-    int output_scale = 1;
+// Bullet pads the quantised network to a multiple of 64 bytes.
+inline constexpr std::size_t max_file_padding = 63;
+inline constexpr std::size_t network_value_count =
+    static_cast<std::size_t>(input_size) * hidden_size + hidden_size + 2 * hidden_size + 1;
+inline constexpr std::size_t network_file_size = network_value_count * sizeof(std::int16_t);
+
+struct alignas(64) Accumulator {
+    std::array<std::int16_t, hidden_size> values;
 };
 
-class NnueNetwork {
-public:
-    [[nodiscard]] bool load(std::string_view path, std::string* error = nullptr);
-    void clear();
+// Laid out like Bullet's quantised.bin: feature weights (one hidden-size
+// column per input feature), feature bias, output weights (side to move's
+// half first), output bias.
+struct Network {
+    std::array<Accumulator, input_size> feature_weights;
+    Accumulator feature_bias;
+    alignas(64) std::array<std::int16_t, 2 * hidden_size> output_weights;
+    std::int16_t output_bias;
+    // Set at load time; see evaluate().
+    bool small_output_weights;
 
-    [[nodiscard]] bool loaded() const { return loaded_; }
-    [[nodiscard]] bool ready() const { return ready_; }
-    [[nodiscard]] const std::string& path() const { return path_; }
-    [[nodiscard]] const NnueNetworkMetadata& metadata() const { return metadata_; }
-    [[nodiscard]] int accumulator_size() const { return metadata_.accumulator_size; }
-    [[nodiscard]] const std::vector<std::int32_t>& accumulator_bias() const { return accumulator_bias_; }
-    [[nodiscard]] const std::vector<std::int32_t>* feature_weights(int feature) const;
-    [[nodiscard]] int evaluate(Color side_to_move, const AccumulatorState& accumulator) const;
-
-private:
-    bool loaded_ = false;
-    bool ready_ = false;
-    std::string path_;
-    NnueNetworkMetadata metadata_;
-    std::vector<std::int32_t> accumulator_bias_;
-    std::unordered_map<int, std::vector<std::int32_t>> feature_weights_;
-    std::vector<std::int32_t> hidden1_bias_;
-    std::vector<std::int32_t> hidden1_weights_;
-    std::vector<std::int32_t> hidden2_bias_;
-    std::vector<std::int32_t> hidden2_weights_;
-    std::vector<std::int32_t> output_weights_;
-    std::int32_t output_bias_ = 0;
+    // Centipawns from the side to move's point of view.
+    [[nodiscard]] int evaluate(const Accumulator& us, const Accumulator& them) const;
 };
+
+// Returns nullptr (and sets error) if the file is missing or has the wrong
+// size for this architecture.
+[[nodiscard]] std::unique_ptr<Network> load_network(std::string_view path, std::string* error = nullptr);
 
 } // namespace aetherz::nnue

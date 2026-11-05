@@ -3,7 +3,6 @@
 #include "engine/board.hpp"
 
 #include <array>
-#include <vector>
 
 namespace aetherz::nnue {
 
@@ -12,35 +11,24 @@ struct PieceSquare {
     int square = -1;
 };
 
+// The pieces a move takes off and puts on the board. Null moves change
+// nothing.
 struct DirtyMove {
-    std::array<PieceSquare, 4> removed{};
-    std::array<PieceSquare, 4> added{};
+    std::array<PieceSquare, 2> removed{};
+    std::array<PieceSquare, 2> added{};
     int removed_count = 0;
     int added_count = 0;
 };
 
-inline constexpr int halfka_king_buckets = 64;
-inline constexpr int halfka_piece_kinds = 12;
-inline constexpr int halfka_squares = 64;
-inline constexpr int halfka_perspective_feature_count = halfka_king_buckets * halfka_piece_kinds * halfka_squares;
-
-[[nodiscard]] constexpr int orient_square(Color perspective, int square)
+// Bullet's Chess768 input: own pieces first, then the opponent's, each by
+// piece type and square, with the board flipped vertically for Black.
+[[nodiscard]] constexpr int feature_index(Color perspective, Piece piece, int square)
 {
-    return perspective == Color::White ? square : square ^ 56;
+    const int side = piece_color(piece) == perspective ? 0 : 384;
+    const int relative_square = perspective == Color::White ? square : square ^ 56;
+    return side + piece_type_index(piece_type(piece)) * 64 + relative_square;
 }
 
-[[nodiscard]] inline int halfka_feature_index(Color perspective, int king_square, Piece piece, int piece_square)
-{
-    if (!is_valid_square(king_square) || !is_valid_square(piece_square) || piece == Piece::None) {
-        return -1;
-    }
-
-    const int relative_king = orient_square(perspective, king_square);
-    const int relative_piece_square = orient_square(perspective, piece_square);
-    return (relative_king * halfka_piece_kinds + piece_index(piece)) * halfka_squares + relative_piece_square;
-}
-
-[[nodiscard]] std::vector<int> active_halfka_features(const aetherz::Board& board, Color perspective);
-[[nodiscard]] DirtyMove dirty_move_from(const aetherz::Board& board, const aetherz::Board::UndoState& undo);
+[[nodiscard]] DirtyMove dirty_move_from(const Board& board, const Board::UndoState& undo);
 
 } // namespace aetherz::nnue

@@ -32,23 +32,31 @@ converter. Convert it to BulletFormat with Bullet's utilities:
 bullet-utils convert --from text --input data/aetherz-train.txt --output data/aetherz-train.bf
 ```
 
-Use Bullet as the trainer, then export the learned tensors to JSON and convert them:
+## Training
 
-```sh
-python tools/nnue/export_aetherz_nnue.py model.json nets/aetherz.nnue
+Train with [Bullet](https://github.com/jw1912/bullet)'s `examples/simple.rs`,
+changing only `HIDDEN_SIZE` to 256 (and the data loader to your data). The
+engine's network is fixed at compile time (`src/engine/nnue/network.hpp`)
+and must match the example's other settings:
+
+- inputs `Chess768`, `(768 -> 256)x2 -> 1`, SCReLU, side to move first
+- `QA = 255`, `QB = 64`, `SCALE = 400`
+- save format `l0w`, `l0b` quantised by QA, `l1w` by QB, `l1b` by QA * QB
+
+Bullet needs a GPU backend, for example
+`cargo run --release --features cuda --package bullet_lib --example simple`
+(or `rocm`, or `metal` on a Mac).
+
+## Using a network
+
+Each checkpoint contains `quantised.bin`: the raw little-endian int16
+weights with no header, padded to a multiple of 64 bytes. Load it as is:
+
+```text
+setoption name EvalFile value checkpoints/simple-40/quantised.bin
 ```
 
-Bullet training needs a CUDA or ROCm runtime enabled in the Bullet build, for
-example `cargo run --release --features cuda --package bullet_lib --example ...`.
-The native AetherZ loader does not consume Bullet checkpoint files directly yet;
-export the tensors into the JSON shape expected by `export_aetherz_nnue.py`.
-
-For engine smoke tests without training:
-
-```sh
-python tools/nnue/make_tiny_nnue.py /tmp/tiny.nnue --mode queen-a1
-./build/aetherz
-```
-
-The native format is intentionally AetherZ-specific for now. Stockfish `.nnue`
-compatibility can come later after the native HalfKA path is stable.
+The engine answers `info string loaded NNUE <path>`, or
+`info string failed to load NNUE: <reason>` if the file does not have the
+size of this architecture. `UseNNUE false` switches back to the classical
+evaluation, which is also used when no network is loaded.
