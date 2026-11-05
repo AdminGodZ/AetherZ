@@ -214,7 +214,7 @@ private:
         bool in_check,
         bool gives_check,
         Move previous_move) const;
-    [[nodiscard]] bool is_draw(const Board& board) const;
+    [[nodiscard]] bool is_draw(const Board& board, int ply) const;
     [[nodiscard]] int repetition_count(const Board& board) const;
     [[nodiscard]] int continuation_score(const Move& move, Move previous_move) const;
     [[nodiscard]] int quiet_history_score(const Move& move, Move previous_move) const;

@@ -294,13 +294,19 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
                 break;
             }
 
-            if (iteration.score <= alpha) {
-                alpha = std::max(-infinity, previous_score - window * 2);
-            } else if (iteration.score >= beta) {
-                beta = std::min(infinity, previous_score + window * 2);
-            }
-
+            // Re-search around the score that fell outside the window, and give
+            // up on windows once they get wide.
             window *= 2;
+            if (iteration.score <= alpha) {
+                beta = (alpha + beta) / 2;
+                alpha = std::max(-infinity, iteration.score - window);
+            } else {
+                beta = std::min(infinity, iteration.score + window);
+            }
+            if (window > 1000) {
+                alpha = -infinity;
+                beta = infinity;
+            }
         }
 
         if (stop_ && depth > 1) {
@@ -427,7 +433,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         return result;
     }
 
-    if (is_draw(board)) {
+    if (is_draw(board, 0)) {
         for (const Move& move : moves) {
             Board::UndoState undo;
             if (!make_legal_move(board, move, undo)) {
@@ -560,7 +566,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     if (should_stop()) {
         return 0;
     }
-    if (is_draw(board)) {
+    if (is_draw(board, ply)) {
         return 0;
     }
     if (ply >= max_ply - 1) {
@@ -569,6 +575,14 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
 
     if (depth <= 0) {
         return quiescence(board, ply, alpha, beta, 1);
+    }
+
+    // Mate distance pruning: no line from here can beat a mate already found
+    // closer to the root.
+    alpha = std::max(alpha, -mate_score + ply);
+    beta = std::min(beta, mate_score - ply - 1);
+    if (alpha >= beta) {
+        return alpha;
     }
 
     const int original_alpha = alpha;
@@ -658,7 +672,8 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             board.unmake_move(undo);
 
             if (score >= beta) {
-                return beta;
+                // Do not trust mate scores from a null-move search.
+                return score >= mate_bound ? beta : score;
             }
         }
     }
@@ -773,7 +788,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     if (should_stop()) {
         return 0;
     }
-    if (is_draw(board)) {
+    if (is_draw(board, ply)) {
         return 0;
     }
     if (ply >= max_ply - 1) {
@@ -781,11 +796,13 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     }
 
     const bool in_check = board.in_check(board.side_to_move());
+    int best = -infinity;
     if (!in_check) {
         const int stand_pat = evaluate(board);
         if (stand_pat >= beta) {
-            return beta;
+            return stand_pat;
         }
+        best = stand_pat;
         alpha = std::max(alpha, stand_pat);
     }
 
@@ -823,8 +840,9 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         board.unmake_move(undo);
 
         if (score >= beta) {
-            return beta;
+            return score;
         }
+        best = std::max(best, score);
         alpha = std::max(alpha, score);
     }
 
@@ -832,7 +850,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         return -mate_score + ply;
     }
 
-    return alpha;
+    return best;
 }
 
 int Search::evaluate(const Board& board) const
@@ -1143,9 +1161,12 @@ int Search::late_move_reduction(
     return std::clamp(reduction, 0, depth - 1);
 }
 
-bool Search::is_draw(const Board& board) const
+bool Search::is_draw(const Board& board, int ply) const
 {
-    return board.halfmove_clock() >= 100 || repetition_count(board) >= 3;
+    // Inside the tree a single repetition is scored as a draw: if repeating
+    // is good for one side it can repeat again. The root needs a real
+    // threefold repetition.
+    return board.halfmove_clock() >= 100 || repetition_count(board) >= (ply > 0 ? 2 : 3);
 }
 
 int Search::repetition_count(const Board& board) const
