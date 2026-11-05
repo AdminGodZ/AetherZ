@@ -73,6 +73,14 @@ endif()
 
 target_link_libraries(aetherz PRIVATE aetherz_engine)
 
+find_package(Threads REQUIRED)
+
+add_executable(aetherz_match
+    src/tools/match.cpp
+)
+
+target_link_libraries(aetherz_match PRIVATE aetherz_engine Threads::Threads)
+
 include(CTest)
 
 if(BUILD_TESTING)
