@@ -294,13 +294,19 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
                 break;
             }
 
-            if (iteration.score <= alpha) {
-                alpha = std::max(-infinity, previous_score - window * 2);
-            } else if (iteration.score >= beta) {
-                beta = std::min(infinity, previous_score + window * 2);
-            }
-
+            // Re-search around the score that fell outside the window, and give
+            // up on windows once they get wide.
             window *= 2;
+            if (iteration.score <= alpha) {
+                beta = (alpha + beta) / 2;
+                alpha = std::max(-infinity, iteration.score - window);
+            } else {
+                beta = std::min(infinity, iteration.score + window);
+            }
+            if (window > 1000) {
+                alpha = -infinity;
+                beta = infinity;
+            }
         }
 
         if (stop_ && depth > 1) {
@@ -360,7 +366,9 @@ void Search::clear()
             row.fill(0);
         }
     }
-    correction_history_.fill(0);
+    for (auto& table : correction_history_) {
+        table.fill(0);
+    }
 }
 
 int Search::hashfull() const
@@ -427,7 +435,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         return result;
     }
 
-    if (is_draw(board)) {
+    if (is_draw(board, 0)) {
         for (const Move& move : moves) {
             Board::UndoState undo;
             if (!make_legal_move(board, move, undo)) {
@@ -488,7 +496,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
         alpha = std::max(alpha, score);
         if (alpha >= beta) {
-            record_cutoff(move, depth, 0, {});
+            record_cutoff(move, depth, 0, {}, {});
             break;
         }
     }
@@ -560,7 +568,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     if (should_stop()) {
         return 0;
     }
-    if (is_draw(board)) {
+    if (is_draw(board, ply)) {
         return 0;
     }
     if (ply >= max_ply - 1) {
@@ -569,6 +577,14 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
 
     if (depth <= 0) {
         return quiescence(board, ply, alpha, beta, 1);
+    }
+
+    // Mate distance pruning: no line from here can beat a mate already found
+    // closer to the root.
+    alpha = std::max(alpha, -mate_score + ply);
+    beta = std::min(beta, mate_score - ply - 1);
+    if (alpha >= beta) {
+        return alpha;
     }
 
     const int original_alpha = alpha;
@@ -658,7 +674,8 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             board.unmake_move(undo);
 
             if (score >= beta) {
-                return beta;
+                // Do not trust mate scores from a null-move search.
+                return score >= mate_bound ? beta : score;
             }
         }
     }
@@ -675,6 +692,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     Move best_move;
     bool searched_move = false;
     int searched_moves = 0;
+    MoveList quiets_tried;
     while (const auto next_move = moves.next()) {
         const Move& move = *next_move;
         if (should_stop()) {
@@ -737,8 +755,11 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
         alpha = std::max(alpha, score);
         if (alpha >= beta) {
-            record_cutoff(move, depth, ply, previous_move);
+            record_cutoff(move, depth, ply, previous_move, quiets_tried);
             break;
+        }
+        if (is_quiet(move)) {
+            quiets_tried.push_back(move);
         }
     }
 
@@ -773,7 +794,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     if (should_stop()) {
         return 0;
     }
-    if (is_draw(board)) {
+    if (is_draw(board, ply)) {
         return 0;
     }
     if (ply >= max_ply - 1) {
@@ -781,11 +802,13 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     }
 
     const bool in_check = board.in_check(board.side_to_move());
+    int best = -infinity;
     if (!in_check) {
         const int stand_pat = evaluate(board);
         if (stand_pat >= beta) {
-            return beta;
+            return stand_pat;
         }
+        best = stand_pat;
         alpha = std::max(alpha, stand_pat);
     }
 
@@ -823,8 +846,9 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         board.unmake_move(undo);
 
         if (score >= beta) {
-            return beta;
+            return score;
         }
+        best = std::max(best, score);
         alpha = std::max(alpha, score);
     }
 
@@ -832,7 +856,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         return -mate_score + ply;
     }
 
-    return alpha;
+    return best;
 }
 
 int Search::evaluate(const Board& board) const
@@ -851,7 +875,25 @@ int Search::raw_evaluate(const Board& board) const
 
 int Search::correction(const Board& board) const
 {
-    return correction_history_[board.hash() % correction_history_.size()];
+    return correction_entry(board);
+}
+
+std::size_t Search::correction_index(const Board& board)
+{
+    std::uint64_t key = board.pieces(Color::White, PieceType::Pawn) * 0x9E3779B97F4A7C15ULL;
+    key ^= board.pieces(Color::Black, PieceType::Pawn) * 0xC2B2AE3D27D4EB4FULL;
+    key ^= key >> 29;
+    return static_cast<std::size_t>(key % correction_history_size);
+}
+
+int& Search::correction_entry(const Board& board)
+{
+    return correction_history_[color_index(board.side_to_move())][correction_index(board)];
+}
+
+int Search::correction_entry(const Board& board) const
+{
+    return correction_history_[color_index(board.side_to_move())][correction_index(board)];
 }
 
 std::optional<Move> MovePicker::next()
@@ -1143,9 +1185,12 @@ int Search::late_move_reduction(
     return std::clamp(reduction, 0, depth - 1);
 }
 
-bool Search::is_draw(const Board& board) const
+bool Search::is_draw(const Board& board, int ply) const
 {
-    return board.halfmove_clock() >= 100 || repetition_count(board) >= 3;
+    // Inside the tree a single repetition is scored as a draw: if repeating
+    // is good for one side it can repeat again. The root needs a real
+    // threefold repetition.
+    return board.halfmove_clock() >= 100 || repetition_count(board) >= (ply > 0 ? 2 : 3);
 }
 
 int Search::repetition_count(const Board& board) const
@@ -1233,7 +1278,7 @@ void Search::clear_killers()
     }
 }
 
-void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_move)
+void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_move, const MoveList& quiets_tried)
 {
     if (is_tactical(move)) {
         return;
@@ -1244,12 +1289,25 @@ void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_m
         killer_moves_[ply][0] = move;
     }
 
-    if (move.from >= 0 && move.to >= 0) {
-        const int bonus = depth * depth;
-        history_[move.from][move.to] = std::clamp(history_[move.from][move.to] + bonus, -16'000, 16'000);
-        if (previous_move.is_valid() && is_valid_square(previous_move.to)) {
-            auto& continuation = continuation_history_[previous_move.to][move.from][move.to];
-            continuation = std::clamp(continuation + bonus * 2, -16'000, 16'000);
+    // History gravity: entries move towards the bonus and saturate smoothly
+    // instead of being clamped.
+    constexpr int history_limit = 16'384;
+    auto update = [](int& entry, int bonus) {
+        entry += bonus - entry * std::abs(bonus) / history_limit;
+    };
+    const int bonus = std::min(16 * depth * depth, 1200);
+    const bool has_previous = previous_move.is_valid();
+
+    update(history_[move.from][move.to], bonus);
+    if (has_previous) {
+        update(continuation_history_[previous_move.to][move.from][move.to], bonus * 2);
+    }
+
+    // Quiet moves searched before the cutoff move failed to cut off.
+    for (const Move& tried : quiets_tried) {
+        update(history_[tried.from][tried.to], -bonus);
+        if (has_previous) {
+            update(continuation_history_[previous_move.to][tried.from][tried.to], -bonus * 2);
         }
     }
 }
@@ -1261,7 +1319,7 @@ void Search::update_correction_history(const Board& board, int depth, int search
     }
 
     const int target = std::clamp(search_score - raw_evaluate(board), -256, 256);
-    int& entry = correction_history_[board.hash() % correction_history_.size()];
+    int& entry = correction_entry(board);
     const int weight = std::clamp(depth, 1, 8);
     const int delta = target - entry;
     entry += delta * weight / 32;
