@@ -4,6 +4,7 @@
 #include "engine/nnue/nnue.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -15,10 +16,29 @@
 
 namespace aetherz {
 
+inline constexpr int max_search_ply = 128;
+inline constexpr int max_search_depth = max_search_ply - 8;
+inline constexpr int mate_score = 30000;
+inline constexpr int mate_bound = mate_score - max_search_ply;
+
+// Moves until mate for a mate score (negative when getting mated), or 0 when
+// the score is not a mate score.
+[[nodiscard]] constexpr int mate_in_moves(int score)
+{
+    if (score >= mate_bound) {
+        return (mate_score - score + 1) / 2;
+    }
+    if (score <= -mate_bound) {
+        return -(mate_score + score) / 2;
+    }
+    return 0;
+}
+
 struct SearchResult {
     std::optional<Move> best_move;
     int score = 0;
     int depth = 0;
+    int seldepth = 0;
     std::uint64_t nodes = 0;
     std::uint64_t tt_hits = 0;
     std::vector<Move> principal_variation;
@@ -26,9 +46,15 @@ struct SearchResult {
 
 struct SearchLimits {
     int max_depth = 4;
+    // Hard limit: the search is aborted once it is reached.
     std::optional<std::chrono::milliseconds> move_time;
+    // Soft limit: no new iteration is started once it is reached.
+    std::optional<std::chrono::milliseconds> soft_time;
+    std::optional<std::uint64_t> max_nodes;
     std::vector<std::uint64_t> position_history;
     std::function<void(const SearchResult&)> on_depth_finished;
+    // Called once the limits above are in effect, before the first iteration.
+    std::function<void()> on_search_started;
 };
 
 enum class Bound : std::uint8_t {
@@ -54,6 +80,7 @@ public:
     void clear();
     void new_search();
     [[nodiscard]] std::size_t size_mb() const;
+    [[nodiscard]] int hashfull() const;
     [[nodiscard]] std::optional<TranspositionEntry> probe(std::uint64_t key) const;
     void store(std::uint64_t key, int depth, int score, Bound bound, Move best_move);
 
@@ -74,8 +101,17 @@ public:
 
     [[nodiscard]] SearchResult find_best_move(Board& board, int depth);
     [[nodiscard]] SearchResult find_best_move(Board& board, const SearchLimits& limits);
+    // Thread-safe: may be called while another thread is searching.
+    void request_stop();
+    void set_time_limits(
+        std::optional<std::chrono::milliseconds> soft_time,
+        std::optional<std::chrono::milliseconds> hard_time);
+
     void set_hash_size_mb(std::size_t megabytes);
     void clear_hash();
+    // Clears the hash table and all move-ordering and correction histories.
+    void clear();
+    [[nodiscard]] int hashfull() const;
     [[nodiscard]] std::size_t hash_size_mb() const;
     void set_use_nnue(bool enabled);
     [[nodiscard]] bool use_nnue() const;
@@ -91,14 +127,18 @@ private:
         Tactical,
     };
 
-    static constexpr int max_ply = 128;
+    static constexpr int max_ply = max_search_ply;
     static constexpr std::size_t correction_history_size = 16'384;
 
     TranspositionTable table_;
     std::uint64_t nodes_ = 0;
     std::uint64_t tt_hits_ = 0;
-    bool stop_ = false;
-    std::optional<std::chrono::steady_clock::time_point> deadline_;
+    int seldepth_ = 0;
+    std::atomic<bool> stop_ = false;
+    // Deadlines as steady_clock ticks; zero means no deadline.
+    std::atomic<std::int64_t> hard_deadline_ = 0;
+    std::atomic<std::int64_t> soft_deadline_ = 0;
+    std::optional<std::uint64_t> max_nodes_;
     std::array<std::array<Move, 2>, max_ply> killer_moves_{};
     std::array<std::array<int, 64>, 64> history_{};
     std::array<std::array<std::array<int, 64>, 64>, 64> continuation_history_{};
@@ -121,6 +161,7 @@ private:
         Move previous_move = {},
         MoveGeneration generation = MoveGeneration::All) const;
     [[nodiscard]] bool should_stop(bool force_check = false);
+    [[nodiscard]] bool soft_limit_reached() const;
     [[nodiscard]] bool can_try_razoring(int depth, int ply, int alpha, int beta, bool in_check, int static_eval) const;
     [[nodiscard]] bool can_try_probcut(int depth, int ply, int beta, bool in_check, int static_eval) const;
     [[nodiscard]] bool can_try_null_move(const Board& board, int depth, int ply, int alpha, int beta) const;
