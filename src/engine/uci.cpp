@@ -406,7 +406,10 @@ void UciEngine::handle_go(const std::vector<std::string>& tokens)
     TimePlan plan;
     if (move_time) {
         const auto budget = std::chrono::milliseconds{std::max(1, *move_time - move_overhead_ms_)};
-        plan = TimePlan{.soft = budget, .hard = budget};
+        // A fixed move time is meant to be used in full: no soft limit, so
+        // iterations continue until the hard limit even when the best move
+        // is stable.
+        plan = TimePlan{.soft = std::nullopt, .hard = budget};
     } else if (remaining && *remaining > 0) {
         plan = plan_time(*remaining, increment, moves_to_go, move_overhead_ms_);
     }
