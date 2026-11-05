@@ -442,7 +442,7 @@ void UciEngine::handle_go(const std::vector<std::string>& tokens)
         write(format_search_info(info, search_.hashfull(), start));
     };
 
-    search_thread_ = std::thread{[this, limits = std::move(limits), board = board_, start]() mutable {
+    search_thread_ = SearchThread{[this, limits = std::move(limits), board = board_, start]() mutable {
         SearchResult result = search_.find_best_move(board, limits);
         if (result.depth == 0) {
             write(format_search_info(result, search_.hashfull(), start));
