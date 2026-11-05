@@ -85,6 +85,12 @@ if(NOT WIN32)
     target_link_libraries(aetherz_match PRIVATE aetherz_engine Threads::Threads)
 endif()
 
+add_executable(aetherz_tune
+    src/tools/tune.cpp
+)
+
+target_link_libraries(aetherz_tune PRIVATE aetherz_engine Threads::Threads)
+
 include(CTest)
 
 if(BUILD_TESTING)

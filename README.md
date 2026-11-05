@@ -81,6 +81,24 @@ and runs a sequential probability ratio test (SPRT) on the results:
 - The SPRT never concludes before 50 game pairs: variance estimates from a
   handful of pairs are unreliable.
 
+## Tuning The Evaluation
+
+The evaluation weights live in `src/engine/eval_weights.inc` and are fitted
+to game results with `aetherz_tune` (Texel tuning). Generate games with the
+match runner, then tune and rebuild:
+
+```bash
+./build/aetherz_match --engine1 ./build/aetherz --engine2 ./build/aetherz \
+    --tc 1+0.01 --concurrency 12 --pairs 20000 --games selfplay.txt
+./build/aetherz_tune --out src/engine/eval_weights.inc --epochs 3000 selfplay.txt
+cmake --build build
+```
+
+The tuner keeps quiet positions (not in check, and the move played was not a
+capture or promotion), skips the opening plies, fits the logistic scale once
+and then runs Adam on all weights. Always confirm a new set of weights with
+an SPRT before committing it.
+
 ## UCI Examples
 
 ```text
