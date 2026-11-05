@@ -15,8 +15,12 @@ namespace aetherz {
 namespace {
 
 constexpr int infinity = 32000;
-constexpr int mate_score = 30000;
 constexpr int initial_aspiration_window = 35;
+
+std::int64_t deadline_after(std::chrono::milliseconds duration)
+{
+    return (std::chrono::steady_clock::now() + duration).time_since_epoch().count();
+}
 
 bool is_tactical(const Move& move)
 {
@@ -159,6 +163,18 @@ std::size_t TranspositionTable::size_mb() const
     return clusters_.size() * sizeof(Cluster) / (1024ULL * 1024ULL);
 }
 
+int TranspositionTable::hashfull() const
+{
+    const std::size_t sample = std::min<std::size_t>(clusters_.size(), 1000 / cluster_size);
+    int used = 0;
+    for (std::size_t index = 0; index < sample; ++index) {
+        for (const TranspositionEntry& entry : clusters_[index].entries) {
+            used += entry.depth >= 0 && entry.generation == generation_ ? 1 : 0;
+        }
+    }
+    return sample == 0 ? 0 : static_cast<int>(used * 1000 / (sample * cluster_size));
+}
+
 std::optional<TranspositionEntry> TranspositionTable::probe(std::uint64_t key) const
 {
     if (clusters_.empty()) {
@@ -234,18 +250,18 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     nodes_ = 0;
     tt_hits_ = 0;
     stop_ = false;
-    deadline_.reset();
+    max_nodes_ = limits.max_nodes;
+    set_time_limits(limits.soft_time, limits.move_time);
     table_.new_search();
     clear_killers();
     reset_position_history(board, limits);
     refresh_nnue(board);
-
-    if (limits.move_time) {
-        deadline_ = std::chrono::steady_clock::now() + *limits.move_time;
+    if (limits.on_search_started) {
+        limits.on_search_started();
     }
 
     SearchResult best_completed;
-    const int max_depth = std::max(1, limits.max_depth);
+    const int max_depth = std::clamp(limits.max_depth, 1, max_search_depth);
     int previous_score = 0;
 
     for (int depth = 1; depth <= max_depth; ++depth) {
@@ -262,8 +278,10 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
 
         SearchResult iteration;
         int window = initial_aspiration_window;
+        seldepth_ = 0;
         while (true) {
             iteration = search_depth(board, depth, alpha, beta);
+            iteration.seldepth = std::max(seldepth_, depth);
             iteration.nodes = nodes_;
             iteration.tt_hits = tt_hits_;
 
@@ -292,7 +310,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
             }
         }
 
-        if (should_stop(true)) {
+        if (should_stop(true) || soft_limit_reached()) {
             break;
         }
     }
@@ -300,6 +318,19 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     best_completed.nodes = nodes_;
     best_completed.tt_hits = tt_hits_;
     return best_completed;
+}
+
+void Search::request_stop()
+{
+    stop_ = true;
+}
+
+void Search::set_time_limits(
+    std::optional<std::chrono::milliseconds> soft_time,
+    std::optional<std::chrono::milliseconds> hard_time)
+{
+    soft_deadline_ = soft_time ? deadline_after(*soft_time) : 0;
+    hard_deadline_ = hard_time ? deadline_after(*hard_time) : 0;
 }
 
 void Search::set_hash_size_mb(std::size_t megabytes)
@@ -310,6 +341,26 @@ void Search::set_hash_size_mb(std::size_t megabytes)
 void Search::clear_hash()
 {
     table_.clear();
+}
+
+void Search::clear()
+{
+    table_.clear();
+    clear_killers();
+    for (auto& row : history_) {
+        row.fill(0);
+    }
+    for (auto& table : continuation_history_) {
+        for (auto& row : table) {
+            row.fill(0);
+        }
+    }
+    correction_history_.fill(0);
+}
+
+int Search::hashfull() const
+{
+    return table_.hashfull();
 }
 
 std::size_t Search::hash_size_mb() const
@@ -496,11 +547,15 @@ std::vector<Move> Search::principal_variation(Board board, int depth) const
 int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move previous_move)
 {
     ++nodes_;
+    seldepth_ = std::max(seldepth_, ply);
     if (should_stop()) {
         return 0;
     }
     if (is_draw(board)) {
         return 0;
+    }
+    if (ply >= max_ply - 1) {
+        return evaluate(board);
     }
 
     if (depth <= 0) {
@@ -702,11 +757,15 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
 int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth)
 {
     ++nodes_;
+    seldepth_ = std::max(seldepth_, ply);
     if (should_stop()) {
         return 0;
     }
     if (is_draw(board)) {
         return 0;
+    }
+    if (ply >= max_ply - 1) {
+        return evaluate(board);
     }
 
     const bool in_check = board.in_check(board.side_to_move());
@@ -893,20 +952,30 @@ std::vector<Move> Search::ordered_moves(
 
 bool Search::should_stop(bool force_check)
 {
-    if (stop_) {
+    if (stop_.load(std::memory_order_relaxed)) {
         return true;
     }
 
-    if (!deadline_) {
-        return false;
+    if (max_nodes_ && nodes_ >= *max_nodes_) {
+        stop_ = true;
+        return true;
     }
 
     if (!force_check && (nodes_ & 2047ULL) != 0) {
         return false;
     }
 
-    stop_ = std::chrono::steady_clock::now() >= *deadline_;
-    return stop_;
+    const std::int64_t deadline = hard_deadline_.load(std::memory_order_relaxed);
+    if (deadline != 0 && std::chrono::steady_clock::now().time_since_epoch().count() >= deadline) {
+        stop_ = true;
+    }
+    return stop_.load(std::memory_order_relaxed);
+}
+
+bool Search::soft_limit_reached() const
+{
+    const std::int64_t deadline = soft_deadline_.load(std::memory_order_relaxed);
+    return deadline != 0 && std::chrono::steady_clock::now().time_since_epoch().count() >= deadline;
 }
 
 bool Search::can_try_razoring(int depth, int ply, int alpha, int beta, bool in_check, int static_eval) const

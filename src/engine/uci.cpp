@@ -54,10 +54,26 @@ std::optional<int> parse_int_after(const std::vector<std::string>& tokens, std::
     return std::nullopt;
 }
 
-std::chrono::milliseconds safe_move_time(int milliseconds)
+std::optional<std::uint64_t> parse_u64_after(const std::vector<std::string>& tokens, std::string_view name)
 {
-    constexpr int move_overhead_ms = 10;
-    return std::chrono::milliseconds{std::max(1, milliseconds - move_overhead_ms)};
+    for (std::size_t index = 0; index + 1 < tokens.size(); ++index) {
+        if (tokens[index] != name) {
+            continue;
+        }
+
+        try {
+            return std::stoull(tokens[index + 1]);
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool has_token(const std::vector<std::string>& tokens, std::string_view name)
+{
+    return std::ranges::find(tokens, name) != tokens.end();
 }
 
 std::optional<bool> parse_bool(std::string_view value)
@@ -72,48 +88,6 @@ std::optional<bool> parse_bool(std::string_view value)
     return std::nullopt;
 }
 
-SearchLimits parse_search_limits(const std::vector<std::string>& tokens, Color side_to_move)
-{
-    constexpr int default_depth = 4;
-    constexpr int timed_max_depth = 64;
-    constexpr int default_moves_to_go = 30;
-
-    SearchLimits limits;
-
-    const auto depth = parse_int_after(tokens, "depth");
-    const auto move_time = parse_int_after(tokens, "movetime");
-    const auto white_time = parse_int_after(tokens, "wtime");
-    const auto black_time = parse_int_after(tokens, "btime");
-    const auto white_increment = parse_int_after(tokens, "winc").value_or(0);
-    const auto black_increment = parse_int_after(tokens, "binc").value_or(0);
-    const auto moves_to_go = std::max(1, parse_int_after(tokens, "movestogo").value_or(default_moves_to_go));
-
-    if (depth) {
-        limits.max_depth = std::max(1, *depth);
-    } else if (move_time || white_time || black_time) {
-        limits.max_depth = timed_max_depth;
-    } else {
-        limits.max_depth = default_depth;
-    }
-
-    if (move_time) {
-        limits.move_time = safe_move_time(*move_time);
-        return limits;
-    }
-
-    const auto remaining_time = side_to_move == Color::White ? white_time : black_time;
-    const int increment = side_to_move == Color::White ? white_increment : black_increment;
-    if (!remaining_time || *remaining_time <= 0) {
-        return limits;
-    }
-
-    const int base = *remaining_time / moves_to_go;
-    const int increment_bonus = increment * 3 / 4;
-    const int cap = std::max(1, *remaining_time / 4);
-    limits.move_time = safe_move_time(std::min(base + increment_bonus, cap));
-    return limits;
-}
-
 std::int64_t elapsed_milliseconds(std::chrono::steady_clock::time_point start)
 {
     return std::max<std::int64_t>(
@@ -123,29 +97,75 @@ std::int64_t elapsed_milliseconds(std::chrono::steady_clock::time_point start)
             .count());
 }
 
-void write_search_info(
-    std::ostream& output,
-    const SearchResult& result,
-    std::chrono::steady_clock::time_point start)
+std::string format_score(int score)
+{
+    if (const int moves = mate_in_moves(score); moves != 0) {
+        return "mate " + std::to_string(moves);
+    }
+    return "cp " + std::to_string(score);
+}
+
+std::string format_search_info(const SearchResult& result, int hashfull, std::chrono::steady_clock::time_point start)
 {
     const auto elapsed_ms = elapsed_milliseconds(start);
+    std::ostringstream output;
     output << "info depth " << result.depth
-           << " score cp " << result.score
+           << " seldepth " << std::max(result.seldepth, result.depth)
+           << " score " << format_score(result.score)
            << " nodes " << result.nodes
-           << " time " << elapsed_ms
-           << " nps " << (result.nodes * 1000 / elapsed_ms);
+           << " nps " << (result.nodes * 1000 / static_cast<std::uint64_t>(elapsed_ms))
+           << " hashfull " << hashfull
+           << " time " << elapsed_ms;
 
     if (!result.principal_variation.empty()) {
         output << " pv " << pv_to_string(result.principal_variation);
     }
 
     output << '\n';
+    return output.str();
 }
 
 } // namespace
 
+TimePlan plan_time(int remaining_ms, int increment_ms, std::optional<int> moves_to_go, int move_overhead_ms)
+{
+    constexpr int default_moves_to_go = 20;
+    constexpr int max_moves_to_go = 50;
+
+    const std::int64_t available = std::max(1, remaining_ms - move_overhead_ms);
+    const std::int64_t moves = std::clamp(moves_to_go.value_or(default_moves_to_go), 1, max_moves_to_go);
+    const std::int64_t increment = std::max(0, increment_ms);
+
+    std::int64_t soft = available / moves + increment * 3 / 4;
+    soft = std::clamp<std::int64_t>(soft, 1, available * 6 / 10);
+    std::int64_t hard = std::clamp<std::int64_t>(soft * 3, soft, available * 3 / 4);
+    hard = std::max<std::int64_t>(hard, 1);
+
+    return TimePlan{
+        .soft = std::chrono::milliseconds{soft},
+        .hard = std::chrono::milliseconds{hard},
+    };
+}
+
+UciEngine::~UciEngine()
+{
+    stop_search();
+}
+
+void UciEngine::write(std::string_view text)
+{
+    std::lock_guard lock{output_mutex_};
+    if (output_ == nullptr) {
+        return;
+    }
+    *output_ << text;
+    output_->flush();
+}
+
 void UciEngine::loop(std::istream& input, std::ostream& output)
 {
+    output_ = &output;
+
     std::string line;
     while (std::getline(input, line)) {
         const auto tokens = split_words(line);
@@ -155,55 +175,117 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
 
         const std::string& command = tokens.front();
         if (command == "uci") {
-            output << "id name AetherZ\n";
-            output << "id author admingod\n";
-            output << "option name Hash type spin default 32 min 1 max 1024\n";
-            output << "option name UseNNUE type check default true\n";
-            output << "option name EvalFile type string default\n";
-            output << "uciok\n";
+            write(
+                "id name AetherZ\n"
+                "id author admingod\n"
+                "option name Hash type spin default 32 min 1 max 65536\n"
+                "option name Threads type spin default 1 min 1 max 1\n"
+                "option name Move Overhead type spin default 30 min 0 max 5000\n"
+                "option name Ponder type check default false\n"
+                "option name Clear Hash type button\n"
+                "option name UseNNUE type check default true\n"
+                "option name EvalFile type string default\n"
+                "uciok\n");
         } else if (command == "isready") {
-            output << "readyok\n";
+            write("readyok\n");
         } else if (command == "setoption") {
-            handle_setoption(tokens, output);
+            wait_for_search();
+            handle_setoption(tokens);
         } else if (command == "ucinewgame") {
+            wait_for_search();
             board_ = Board::startpos();
             reset_position_history();
-            search_.clear_hash();
+            search_.clear();
         } else if (command == "position") {
+            wait_for_search();
             handle_position(tokens);
         } else if (command == "go") {
-            handle_go(tokens, output);
-        } else if (command == "perft") {
-            handle_perft(tokens, output);
-        } else if (command == "divide") {
-            handle_divide(tokens, output);
-        } else if (command == "moves") {
-            handle_moves(output);
-        } else if (command == "bench") {
-            run_bench_command(tokens, output, output);
-        } else if (command == "perftbench") {
-            run_perft_bench_command(output);
-        } else if (command == "searchbench") {
-            run_search_bench_command(tokens, output, output);
-        } else if (command == "tactics") {
-            run_tactics_command(tokens, output, output);
-        } else if (command == "selfplay") {
-            run_selfplay_command(tokens, output, output);
-        } else if (command == "epdtest") {
-            run_epd_test_command(tokens, output, output);
-        } else if (command == "arasan") {
-            run_arasan_command(tokens, output, output);
-        } else if (command == "quit") {
-            break;
+            stop_search();
+            handle_go(tokens);
         } else if (command == "stop") {
-            output << "bestmove 0000\n";
+            stop_search();
+        } else if (command == "ponderhit") {
+            ponderhit();
+        } else if (command == "quit") {
+            stop_search();
+            break;
+        } else {
+            wait_for_search();
+            std::ostringstream text;
+            if (command == "perft") {
+                handle_perft(tokens);
+            } else if (command == "divide") {
+                handle_divide(tokens);
+            } else if (command == "moves") {
+                handle_moves();
+            } else if (command == "bench") {
+                run_bench_command(tokens, text, text);
+            } else if (command == "perftbench") {
+                run_perft_bench_command(text);
+            } else if (command == "searchbench") {
+                run_search_bench_command(tokens, text, text);
+            } else if (command == "tactics") {
+                run_tactics_command(tokens, text, text);
+            } else if (command == "selfplay") {
+                run_selfplay_command(tokens, text, text);
+            } else if (command == "epdtest") {
+                run_epd_test_command(tokens, text, text);
+            } else if (command == "arasan") {
+                run_arasan_command(tokens, text, text);
+            }
+            write(text.str());
         }
+    }
 
-        output.flush();
+    // Input closed: finish a bounded search, but do not wait forever on an
+    // infinite or ponder search.
+    {
+        std::lock_guard lock{state_mutex_};
+        if (hold_bestmove_) {
+            stop_requested_ = true;
+            search_.request_stop();
+        }
+    }
+    state_changed_.notify_all();
+    wait_for_search();
+    output_ = nullptr;
+}
+
+void UciEngine::stop_search()
+{
+    {
+        std::lock_guard lock{state_mutex_};
+        stop_requested_ = true;
+        search_.request_stop();
+    }
+    state_changed_.notify_all();
+    wait_for_search();
+}
+
+void UciEngine::ponderhit()
+{
+    {
+        std::lock_guard lock{state_mutex_};
+        if (!pondering_) {
+            return;
+        }
+        pondering_ = false;
+        hold_bestmove_ = false;
+        if (search_started_) {
+            search_.set_time_limits(ponder_plan_.soft, ponder_plan_.hard);
+        }
+    }
+    state_changed_.notify_all();
+}
+
+void UciEngine::wait_for_search()
+{
+    if (search_thread_.joinable()) {
+        search_thread_.join();
     }
 }
 
-void UciEngine::handle_setoption(const std::vector<std::string>& tokens, std::ostream& output)
+void UciEngine::handle_setoption(const std::vector<std::string>& tokens)
 {
     std::vector<std::string> name_parts;
     std::vector<std::string> value_parts;
@@ -231,10 +313,17 @@ void UciEngine::handle_setoption(const std::vector<std::string>& tokens, std::os
 
     if (name == "Hash" && !value.empty()) {
         try {
-            const int megabytes = std::clamp(std::stoi(value), 1, 1024);
+            const int megabytes = std::clamp(std::stoi(value), 1, 65536);
             search_.set_hash_size_mb(static_cast<std::size_t>(megabytes));
         } catch (...) {
         }
+    } else if (name == "Move Overhead" && !value.empty()) {
+        try {
+            move_overhead_ms_ = std::clamp(std::stoi(value), 0, 5000);
+        } catch (...) {
+        }
+    } else if (name == "Clear Hash") {
+        search_.clear();
     } else if (name == "UseNNUE" && !value.empty()) {
         const auto parsed = parse_bool(value);
         if (parsed) {
@@ -248,9 +337,9 @@ void UciEngine::handle_setoption(const std::vector<std::string>& tokens, std::os
 
         std::string error;
         if (search_.load_nnue(value, &error)) {
-            output << "info string loaded NNUE " << search_.nnue_eval_file() << '\n';
+            write("info string loaded NNUE " + search_.nnue_eval_file() + "\n");
         } else {
-            output << "info string failed to load NNUE: " << error << '\n';
+            write("info string failed to load NNUE: " + error + "\n");
         }
     }
 }
@@ -292,29 +381,89 @@ void UciEngine::handle_position(const std::vector<std::string>& tokens)
     }
 }
 
-void UciEngine::handle_go(const std::vector<std::string>& tokens, std::ostream& output)
+void UciEngine::handle_go(const std::vector<std::string>& tokens)
 {
-    SearchLimits limits = parse_search_limits(tokens, board_.side_to_move());
+    const auto depth = parse_int_after(tokens, "depth");
+    const auto move_time = parse_int_after(tokens, "movetime");
+    const auto nodes = parse_u64_after(tokens, "nodes");
+    const bool white = board_.side_to_move() == Color::White;
+    const auto remaining = parse_int_after(tokens, white ? "wtime" : "btime");
+    const int increment = parse_int_after(tokens, white ? "winc" : "binc").value_or(0);
+    const auto moves_to_go = parse_int_after(tokens, "movestogo");
+    const bool ponder = has_token(tokens, "ponder");
+    const bool infinite = has_token(tokens, "infinite") || (!depth && !move_time && !nodes && !remaining);
+
+    SearchLimits limits;
+    limits.max_depth = depth ? std::max(1, *depth) : max_search_depth;
+    limits.max_nodes = nodes;
     limits.position_history = position_history_;
 
-    const auto start = std::chrono::steady_clock::now();
-    limits.on_depth_finished = [&](const SearchResult& info) {
-        write_search_info(output, info, start);
-        output.flush();
-    };
-
-    SearchResult result = search_.find_best_move(board_, limits);
-    if (result.depth == 0) {
-        write_search_info(output, result, start);
+    TimePlan plan;
+    if (move_time) {
+        const auto budget = std::chrono::milliseconds{std::max(1, *move_time - move_overhead_ms_)};
+        plan = TimePlan{.soft = budget, .hard = budget};
+    } else if (remaining && *remaining > 0) {
+        plan = plan_time(*remaining, increment, moves_to_go, move_overhead_ms_);
     }
 
-    output << "bestmove " << (result.best_move ? move_to_uci(*result.best_move) : "0000") << '\n';
+    {
+        std::lock_guard lock{state_mutex_};
+        hold_bestmove_ = infinite || ponder;
+        pondering_ = ponder;
+        ponder_search_ = ponder;
+        search_started_ = false;
+        stop_requested_ = false;
+        ponder_plan_ = plan;
+    }
+
+    if (!ponder) {
+        limits.soft_time = plan.soft;
+        limits.move_time = plan.hard;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    // The search resets its stop flag and deadlines when it starts, so apply
+    // a stop or ponderhit that arrived before that point now.
+    limits.on_search_started = [this] {
+        std::lock_guard lock{state_mutex_};
+        search_started_ = true;
+        if (stop_requested_) {
+            search_.request_stop();
+        } else if (ponder_search_ && !pondering_) {
+            search_.set_time_limits(ponder_plan_.soft, ponder_plan_.hard);
+        }
+    };
+    limits.on_depth_finished = [this, start](const SearchResult& info) {
+        write(format_search_info(info, search_.hashfull(), start));
+    };
+
+    search_thread_ = std::thread{[this, limits = std::move(limits), board = board_, start]() mutable {
+        SearchResult result = search_.find_best_move(board, limits);
+        if (result.depth == 0) {
+            write(format_search_info(result, search_.hashfull(), start));
+        }
+
+        {
+            std::unique_lock lock{state_mutex_};
+            state_changed_.wait(lock, [this] {
+                return !hold_bestmove_ || stop_requested_;
+            });
+        }
+
+        std::string text = "bestmove ";
+        text += result.best_move ? move_to_uci(*result.best_move) : "0000";
+        if (result.best_move && result.principal_variation.size() >= 2) {
+            text += " ponder " + move_to_uci(result.principal_variation[1]);
+        }
+        text += '\n';
+        write(text);
+    }};
 }
 
-void UciEngine::handle_perft(const std::vector<std::string>& tokens, std::ostream& output)
+void UciEngine::handle_perft(const std::vector<std::string>& tokens)
 {
     if (tokens.size() < 2) {
-        output << "info string usage: perft <depth>\n";
+        write("info string usage: perft <depth>\n");
         return;
     }
 
@@ -322,18 +471,18 @@ void UciEngine::handle_perft(const std::vector<std::string>& tokens, std::ostrea
     try {
         depth = std::stoi(tokens[1]);
     } catch (...) {
-        output << "info string invalid depth\n";
+        write("info string invalid depth\n");
         return;
     }
 
     Board board = board_;
-    output << "nodes " << perft(board, depth) << '\n';
+    write("nodes " + std::to_string(perft(board, depth)) + "\n");
 }
 
-void UciEngine::handle_divide(const std::vector<std::string>& tokens, std::ostream& output)
+void UciEngine::handle_divide(const std::vector<std::string>& tokens)
 {
     if (tokens.size() < 2) {
-        output << "info string usage: divide <depth>\n";
+        write("info string usage: divide <depth>\n");
         return;
     }
 
@@ -341,24 +490,28 @@ void UciEngine::handle_divide(const std::vector<std::string>& tokens, std::ostre
     try {
         depth = std::stoi(tokens[1]);
     } catch (...) {
-        output << "info string invalid depth\n";
+        write("info string invalid depth\n");
         return;
     }
 
     Board board = board_;
     std::uint64_t total = 0;
+    std::ostringstream text;
     for (const auto& line : perft_divide(board, depth)) {
         total += line.nodes;
-        output << move_to_uci(line.move) << ": " << line.nodes << '\n';
+        text << move_to_uci(line.move) << ": " << line.nodes << '\n';
     }
-    output << "nodes " << total << '\n';
+    text << "nodes " << total << '\n';
+    write(text.str());
 }
 
-void UciEngine::handle_moves(std::ostream& output)
+void UciEngine::handle_moves()
 {
+    std::ostringstream text;
     for (const Move& move : board_.generate_legal_moves()) {
-        output << move_to_uci(move) << '\n';
+        text << move_to_uci(move) << '\n';
     }
+    write(text.str());
 }
 
 void UciEngine::reset_position_history()

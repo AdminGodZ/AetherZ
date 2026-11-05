@@ -592,6 +592,93 @@ void test_nnue_incremental_push_matches_refresh()
     require(evaluator.evaluate(*board) == 32, "incremental NNUE pop restores previous accumulator");
 }
 
+std::size_t count_occurrences(const std::string& text, std::string_view needle)
+{
+    std::size_t count = 0;
+    for (auto position = text.find(needle); position != std::string::npos; position = text.find(needle, position + 1)) {
+        ++count;
+    }
+    return count;
+}
+
+void test_uci_infinite_search_waits_for_stop()
+{
+    std::istringstream input{
+        "position startpos\n"
+        "go infinite\n"
+        "isready\n"
+        "stop\n"
+        "quit\n"};
+    std::ostringstream output;
+
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+
+    const std::string text = output.str();
+    require(text.find("readyok") != std::string::npos, "UCI answers isready during a search");
+    require(count_occurrences(text, "bestmove ") == 1, "infinite search reports exactly one bestmove after stop");
+}
+
+void test_uci_depth_search_finishes_at_end_of_input()
+{
+    std::istringstream input{
+        "position startpos\n"
+        "go depth 3\n"};
+    std::ostringstream output;
+
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+
+    const std::string text = output.str();
+    require(text.find("info depth 3 ") != std::string::npos, "depth search completes when input ends");
+    require(count_occurrences(text, "bestmove ") == 1, "depth search reports one bestmove");
+}
+
+void test_uci_reports_mate_scores()
+{
+    std::istringstream input{
+        "position fen 7k/8/5KQ1/8/8/8/8/8 w - - 0 1\n"
+        "go depth 3\n"};
+    std::ostringstream output;
+
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+
+    const std::string text = output.str();
+    require(text.find("score mate 1 ") != std::string::npos, "UCI reports mate in one as a mate score");
+    require(text.find("bestmove g6g7") != std::string::npos, "UCI plays the mating move");
+}
+
+void test_uci_ponder_waits_for_ponderhit()
+{
+    std::istringstream input{
+        "position startpos moves e2e4\n"
+        "go ponder wtime 2000 btime 2000\n"
+        "ponderhit\n"};
+    std::ostringstream output;
+
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+
+    const std::string text = output.str();
+    require(count_occurrences(text, "bestmove ") == 1, "ponder search reports bestmove after ponderhit");
+}
+
+void test_time_plan_stays_within_clock()
+{
+    for (const int remaining : {50, 1000, 10000, 60000, 600000}) {
+        for (const int increment : {0, 100, 2000}) {
+            const auto plan = aetherz::plan_time(remaining, increment, std::nullopt, 30);
+            require(plan.soft.has_value() && plan.hard.has_value(), "time plan sets both limits");
+            require(plan.soft->count() >= 1 && plan.soft->count() <= plan.hard->count(), "soft limit is at most hard limit");
+            require(plan.hard->count() < std::max(remaining, 2), "hard limit stays below remaining time");
+        }
+    }
+
+    const auto last_move = aetherz::plan_time(10000, 0, 1, 30);
+    require(last_move.soft->count() > 3000, "single move to go uses a large share of the clock");
+}
+
 void test_uci_accepts_nnue_options()
 {
     const std::string path = "/tmp/aetherz_uci_dummy.nnue";
@@ -755,6 +842,11 @@ int main()
     test_nnue_tiny_network_uses_halfka_feature();
     test_nnue_incremental_push_matches_refresh();
     test_uci_accepts_nnue_options();
+    test_uci_infinite_search_waits_for_stop();
+    test_uci_depth_search_finishes_at_end_of_input();
+    test_uci_reports_mate_scores();
+    test_uci_ponder_waits_for_ponderhit();
+    test_time_plan_stays_within_clock();
     test_training_data_command_writes_bullet_text();
     test_search_benchmark_command_reports_summary();
     test_bench_command_is_deterministic();
