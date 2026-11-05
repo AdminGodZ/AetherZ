@@ -75,11 +75,15 @@ target_link_libraries(aetherz PRIVATE aetherz_engine)
 
 find_package(Threads REQUIRED)
 
-add_executable(aetherz_match
-    src/tools/match.cpp
-)
+# The match runner drives engines through POSIX pipes and processes. On
+# Windows, build it under WSL or use fastchess/cutechess instead.
+if(NOT WIN32)
+    add_executable(aetherz_match
+        src/tools/match.cpp
+    )
 
-target_link_libraries(aetherz_match PRIVATE aetherz_engine Threads::Threads)
+    target_link_libraries(aetherz_match PRIVATE aetherz_engine Threads::Threads)
+endif()
 
 include(CTest)
 

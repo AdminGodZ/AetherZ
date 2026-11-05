@@ -63,6 +63,9 @@ and runs a sequential probability ratio test (SPRT) on the results:
     --sprt 0 5 --games games.txt
 ```
 
+- The runner uses POSIX processes and pipes, so it builds on Linux, macOS
+  and WSL but not natively on Windows; there, fastchess or cutechess work
+  just as well.
 - `--sprt 0 5` tests "dev gains at least 5 Elo" against "dev gains nothing"
   (alpha = beta = 0.05). Use bounds like `--sprt -5 0` to show that a
   simplification or cleanup does not lose strength.
