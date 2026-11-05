@@ -137,6 +137,41 @@ void test_incremental_hash_matches_full_hash()
     }
 }
 
+void test_gives_check_matches_making_the_move()
+{
+    const std::array<std::string_view, 4> fens{
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    };
+
+    // Check every pseudo-legal move along random games from each position.
+    std::uint64_t state = 987654321;
+    for (const auto fen : fens) {
+        auto board = *aetherz::Board::from_fen(fen);
+        for (int ply = 0; ply < 300; ++ply) {
+            for (const auto& move : board.generate_pseudo_legal_moves()) {
+                auto next = board;
+                aetherz::Board::UndoState undo;
+                if (!next.make_move(move, undo)) {
+                    continue;
+                }
+                const bool checks = next.in_check(next.side_to_move());
+                require(board.gives_check(move) == checks, "gives_check agrees with making the move");
+            }
+
+            const auto legal = board.generate_legal_moves();
+            if (legal.empty()) {
+                break;
+            }
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            aetherz::Board::UndoState undo;
+            require(board.make_move(legal[(state >> 33) % legal.size()], undo), "random legal move is playable");
+        }
+    }
+}
+
 void test_start_position_perft()
 {
     auto board = aetherz::Board::startpos();
@@ -842,6 +877,7 @@ int main()
     test_null_move_restores_state_exactly();
     test_board_piece_cache_tracks_moves();
     test_incremental_hash_matches_full_hash();
+    test_gives_check_matches_making_the_move();
     test_start_position_perft();
     test_kiwipete_perft();
     test_reference_perft_positions();

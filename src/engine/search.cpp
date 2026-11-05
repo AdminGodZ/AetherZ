@@ -771,25 +771,31 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             break;
         }
 
-        Board::UndoState undo;
-        const int see_gain = is_capture_like(move) ? static_exchange_evaluation(board, move) : 0;
-        if (!make_legal_move(board, move, undo)) {
-            continue;
-        }
-        const bool gives_check = board.in_check(board.side_to_move());
+        // Prune before making the move: cheaper than making and unmaking it.
+        const bool gives_check = board.gives_check(move);
+        const bool capture = is_capture_like(move);
+        const int see_gain = capture ? static_exchange_evaluation(board, move) : 0;
         const int move_index = searched_moves + 1;
-        if (depth <= 2
-            && move_index > 1
-            && !in_check
-            && !gives_check
-            && is_quiet(move)
-            && alpha > -mate_score + 1000
-            && can_prune_futility(move, depth, move_index, alpha, in_check, gives_check, current_static_eval())) {
-            board.unmake_move(undo);
-            continue;
+        if (searched_move && !in_check && best > -mate_bound) {
+            if (is_quiet(move)
+                && can_prune_futility(move, depth, move_index, alpha, in_check, gives_check, current_static_eval())) {
+                continue;
+            }
+            if (!pv_node && can_prune_late_move(move, depth, move_index, ply, in_check, gives_check, improving, previous_move)) {
+                continue;
+            }
+            // SEE pruning: skip captures that lose material and quiet moves
+            // that hang the moved piece, with a depth-scaled tolerance.
+            if (depth <= 8 && capture && see_gain < -100 * depth) {
+                continue;
+            }
+            if (depth <= 6 && is_quiet(move) && !gives_check && static_exchange_evaluation(board, move) < -60 * depth) {
+                continue;
+            }
         }
-        if (!pv_node && can_prune_late_move(move, depth, move_index, ply, in_check, gives_check, improving, previous_move)) {
-            board.unmake_move(undo);
+
+        Board::UndoState undo;
+        if (!make_legal_move(board, move, undo)) {
             continue;
         }
 

@@ -329,6 +329,37 @@ bool Board::in_check(Color color) const
     return is_valid_square(king) && is_square_attacked(king, opposite(color));
 }
 
+bool Board::gives_check(const Move& move) const
+{
+    const Color us = side_to_move_;
+    const int king = king_square(opposite(us));
+    if (!is_valid_square(king)) {
+        return false;
+    }
+
+    // Rare special moves: just play them.
+    if (move.flag == MoveFlag::EnPassant
+        || move.flag == MoveFlag::KingCastle
+        || move.flag == MoveFlag::QueenCastle
+        || move.promotion != PieceType::None) {
+        Board next = *this;
+        UndoState undo;
+        return next.make_move(move, undo) && next.in_check(opposite(us));
+    }
+
+    const Bitboard occupancy = (occupancy_ & ~square_bb(move.from)) | square_bb(move.to);
+    const PieceType type = piece_type(squares_[move.from]);
+    if ((attacks_from(type, us, move.to, occupancy) & square_bb(king)) != 0) {
+        return true;
+    }
+
+    // Discovered check by a slider behind the moving piece.
+    const Bitboard queens = pieces(us, PieceType::Queen);
+    const Bitboard diagonal = (pieces(us, PieceType::Bishop) | queens) & ~square_bb(move.from);
+    const Bitboard straight = (pieces(us, PieceType::Rook) | queens) & ~square_bb(move.from);
+    return (bishop_attacks(king, occupancy) & diagonal) != 0 || (rook_attacks(king, occupancy) & straight) != 0;
+}
+
 template <bool TacticalOnly>
 void Board::generate_moves(MoveList& moves) const
 {

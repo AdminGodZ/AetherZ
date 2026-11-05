@@ -116,7 +116,9 @@ bool leaves_king_in_check(const Board& board, const Move& move)
 
 int static_exchange_evaluation(const Board& board, const Move& move)
 {
-    if (!move.is_valid() || (!is_capture_like(move) && move.promotion == PieceType::None)) {
+    // Quiet moves are evaluated too: the gain is what the opponent can win
+    // by capturing the moved piece.
+    if (!move.is_valid()) {
         return 0;
     }
 

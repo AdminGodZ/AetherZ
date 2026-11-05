@@ -81,6 +81,8 @@ public:
 
     [[nodiscard]] bool is_square_attacked(int square, Color by_color) const;
     [[nodiscard]] bool in_check(Color color) const;
+    // Whether a pseudo-legal move of the side to move checks the opponent.
+    [[nodiscard]] bool gives_check(const Move& move) const;
 
     [[nodiscard]] MoveList generate_pseudo_legal_moves() const;
     [[nodiscard]] MoveList generate_pseudo_legal_tactical_moves() const;
