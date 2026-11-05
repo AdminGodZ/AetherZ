@@ -48,6 +48,39 @@ signature of the search: a change that is only meant to make the engine faster
 must keep it identical, while any change to search or evaluation behaviour
 changes it. Mention the bench node count in every commit that touches search.
 
+## Testing Changes With Matches
+
+Strength changes are only kept if they win games. `aetherz_match` plays two
+UCI engines against each other in game pairs (same opening, colors swapped)
+and runs a sequential probability ratio test (SPRT) on the results:
+
+```bash
+# Build the baseline from master and the candidate from your branch first.
+./build/aetherz_match \
+    --engine1 ./aetherz-dev --name1 dev \
+    --engine2 ./aetherz-base --name2 base \
+    --tc 8+0.08 --concurrency 8 --pairs 20000 \
+    --sprt 0 5 --games games.txt
+```
+
+- The runner uses POSIX processes and pipes, so it builds on Linux, macOS
+  and WSL but not natively on Windows; there, fastchess or cutechess work
+  just as well.
+- `--sprt 0 5` tests "dev gains at least 5 Elo" against "dev gains nothing"
+  (alpha = beta = 0.05). Use bounds like `--sprt -5 0` to show that a
+  simplification or cleanup does not lose strength.
+- Without `--openings`, balanced random openings are generated from a fixed
+  seed, so both engines and repeated runs see the same openings. Pass an EPD
+  or FEN file with `--openings book.epd` to use a book instead.
+- Games are adjudicated as wins after both engines agree on a score of at
+  least 1000 cp for six plies, and as draws after twelve plies within 10 cp
+  past ply 80.
+- `--games` appends every finished game (result, reason, opening, moves).
+- Generating thousands of random openings takes a few minutes; save them
+  once with `--save-openings book.epd` and pass `--openings book.epd` later.
+- The SPRT never concludes before 50 game pairs: variance estimates from a
+  handful of pairs are unreliable.
+
 ## UCI Examples
 
 ```text
