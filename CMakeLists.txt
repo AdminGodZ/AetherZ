@@ -46,21 +46,28 @@ target_include_directories(aetherz_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_compile_options(aetherz_engine PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-)
+# MSVC (and clang-cl) already optimize Release builds with /O2 and have no
+# native-CPU switch; the optimization flags below are for GCC and Clang,
+# including MinGW and Clang builds on Windows.
+if(MSVC)
+    target_compile_options(aetherz_engine PRIVATE /W4)
+else()
+    target_compile_options(aetherz_engine PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
 
-target_compile_options(aetherz_engine PUBLIC
-    $<$<CONFIG:Release>:-O3>
-)
+    target_compile_options(aetherz_engine PUBLIC
+        $<$<CONFIG:Release>:-O3>
+    )
 
-if(AETHERZ_NATIVE)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
-        target_compile_options(aetherz_engine PUBLIC -mcpu=native)
-    else()
-        target_compile_options(aetherz_engine PUBLIC -march=native)
+    if(AETHERZ_NATIVE)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+            target_compile_options(aetherz_engine PUBLIC -mcpu=native)
+        else()
+            target_compile_options(aetherz_engine PUBLIC -march=native)
+        endif()
     endif()
 endif()
 
