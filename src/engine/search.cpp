@@ -624,8 +624,10 @@ std::vector<Move> Search::principal_variation(Board board, int depth) const
     return line;
 }
 
-int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move previous_move)
+int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move previous_move, Move excluded_move)
 {
+    // A singular-extension verification search of this node without one move.
+    const bool singular_search = excluded_move.is_valid();
     ++nodes_;
     seldepth_ = std::max(seldepth_, ply);
     if (should_stop()) {
@@ -682,7 +684,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     std::optional<Move> tt_move;
     if (const auto& entry = tt_entry) {
         tt_move = entry->best_move;
-        if (entry->depth >= depth) {
+        if (entry->depth >= depth && !singular_search) {
             ++tt_hits_;
             const int table_score = score_from_table(entry->score, ply);
             if (entry->bound == Bound::Exact) {
@@ -710,7 +712,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         --depth;
     }
 
-    if (can_try_razoring(depth, ply, alpha, beta, in_check, current_static_eval())) {
+    if (!singular_search && can_try_razoring(depth, ply, alpha, beta, in_check, current_static_eval())) {
         const int score = quiescence(board, ply, alpha, beta, 0);
         if (score <= alpha) {
             return score;
@@ -719,11 +721,12 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
 
     if (!in_check
         && !pv_node
+        && !singular_search
         && can_prune_reverse_futility(depth, ply, beta, in_check, improving, current_static_eval())) {
         return current_static_eval() - reverse_futility_margin(depth, improving);
     }
 
-    if (can_try_probcut(depth, ply, beta, in_check, current_static_eval())) {
+    if (!singular_search && can_try_probcut(depth, ply, beta, in_check, current_static_eval())) {
         const int probcut_beta = beta + probcut_margin(depth);
         const int probcut_depth = std::max(0, depth - 4);
         MovePicker probcut_moves = ordered_moves(board, tt_move, ply, previous_move, MoveGeneration::Tactical);
@@ -751,6 +754,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     }
 
     if (previous_move.is_valid()
+        && !singular_search
         && current_static_eval() >= beta
         && can_try_null_move(board, depth, ply, alpha, beta)) {
         Board::UndoState undo;
@@ -786,6 +790,9 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         if (should_stop()) {
             break;
         }
+        if (singular_search && same_move(move, excluded_move)) {
+            continue;
+        }
 
         // Prune before making the move: cheaper than making and unmaking it.
         const bool gives_check = board.gives_check(move);
@@ -810,6 +817,31 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             }
         }
 
+        // Singular extensions: if every alternative to a reliable TT move
+        // fails well below its score, the TT move is extended. If even the
+        // alternatives beat beta, several moves refute this node (multi-cut).
+        int singular_extension = 0;
+        if (!singular_search
+            && ply > 0
+            && depth >= 8
+            && tt_move
+            && same_move(move, *tt_move)
+            && tt_entry
+            && tt_entry->depth >= depth - 3
+            && tt_entry->bound != Bound::Upper
+            && std::abs(tt_entry->score) < mate_bound) {
+            const int singular_beta = score_from_table(tt_entry->score, ply) - 2 * depth;
+            const int score = negamax(board, (depth - 1) / 2, ply, singular_beta - 1, singular_beta, previous_move, move);
+            if (stop_) {
+                break;
+            }
+            if (score < singular_beta) {
+                singular_extension = 1;
+            } else if (singular_beta >= beta) {
+                return singular_beta;
+            }
+        }
+
         Board::UndoState undo;
         if (!make_legal_move(board, move, undo)) {
             continue;
@@ -819,7 +851,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         push_nnue(board, undo);
 
         ++searched_moves;
-        const int extension = tactical_extension(move, depth, ply, gives_check, see_gain);
+        const int extension = std::max(singular_extension, tactical_extension(move, depth, ply, gives_check, see_gain));
         const int full_depth = std::max(0, depth - 1 + extension);
         const int reduction = searched_move
             ? late_move_reduction(move, depth, ply, searched_moves, in_check, gives_check, pv_node, improving, previous_move)
@@ -858,13 +890,16 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     }
 
     if (!searched_move) {
+        if (singular_search) {
+            return alpha;
+        }
         if (in_check) {
             return -mate_score + ply;
         }
         return 0;
     }
 
-    if (!stop_ && best_move.is_valid()) {
+    if (!stop_ && !singular_search && best_move.is_valid()) {
         Bound bound = Bound::Exact;
         if (best <= original_alpha) {
             bound = Bound::Upper;

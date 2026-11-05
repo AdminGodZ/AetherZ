@@ -199,7 +199,14 @@ private:
 
     [[nodiscard]] SearchResult search_depth(Board& board, int depth, int alpha, int beta);
     [[nodiscard]] std::vector<Move> principal_variation(Board board, int depth) const;
-    [[nodiscard]] int negamax(Board& board, int depth, int ply, int alpha, int beta, Move previous_move);
+    [[nodiscard]] int negamax(
+        Board& board,
+        int depth,
+        int ply,
+        int alpha,
+        int beta,
+        Move previous_move,
+        Move excluded_move = {});
     [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth);
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] int raw_evaluate(const Board& board) const;
