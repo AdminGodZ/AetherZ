@@ -184,6 +184,7 @@ private:
     // Deadlines as steady_clock ticks; zero means no deadline.
     std::atomic<std::int64_t> hard_deadline_ = 0;
     std::atomic<std::int64_t> soft_deadline_ = 0;
+    std::atomic<std::int64_t> soft_start_ = 0;
     std::optional<std::uint64_t> max_nodes_;
     std::array<std::array<Move, 2>, max_ply> killer_moves_{};
     std::array<std::array<int, 64>, 64> history_{};
@@ -214,7 +215,7 @@ private:
         Move previous_move = {},
         MoveGeneration generation = MoveGeneration::All) const;
     [[nodiscard]] bool should_stop(bool force_check = false);
-    [[nodiscard]] bool soft_limit_reached() const;
+    [[nodiscard]] bool soft_limit_reached(double scale = 1.0) const;
     [[nodiscard]] bool can_try_razoring(int depth, int ply, int alpha, int beta, bool in_check, int static_eval) const;
     [[nodiscard]] bool can_try_probcut(int depth, int ply, int beta, bool in_check, int static_eval) const;
     [[nodiscard]] bool can_try_null_move(const Board& board, int depth, int ply, int alpha, int beta) const;

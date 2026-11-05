@@ -314,6 +314,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     SearchResult best_completed;
     const int max_depth = std::clamp(limits.max_depth, 1, max_search_depth);
     int previous_score = 0;
+    int stable_iterations = 0;
 
     for (int depth = 1; depth <= max_depth; ++depth) {
         if (should_stop(true)) {
@@ -359,7 +360,21 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
             break;
         }
 
+        double time_scale = 1.0;
         if (iteration.best_move || (!stop_ && !best_completed.best_move)) {
+            const bool same_best = best_completed.best_move && iteration.best_move
+                && same_move(*best_completed.best_move, *iteration.best_move);
+            stable_iterations = same_best ? stable_iterations + 1 : 0;
+
+            // Use less time once the best move has settled, more when it just
+            // changed or the score is dropping.
+            if (depth > 1) {
+                time_scale = stable_iterations == 0 ? 1.3 : (stable_iterations >= 4 ? 0.7 : (stable_iterations >= 2 ? 0.85 : 1.0));
+                if (iteration.score < previous_score - 30) {
+                    time_scale *= 1.2;
+                }
+            }
+
             previous_score = iteration.score;
             best_completed = iteration;
             if (limits.on_depth_finished) {
@@ -367,7 +382,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
             }
         }
 
-        if (should_stop(true) || soft_limit_reached()) {
+        if (should_stop(true) || soft_limit_reached(time_scale)) {
             break;
         }
     }
@@ -386,6 +401,7 @@ void Search::set_time_limits(
     std::optional<std::chrono::milliseconds> soft_time,
     std::optional<std::chrono::milliseconds> hard_time)
 {
+    soft_start_ = std::chrono::steady_clock::now().time_since_epoch().count();
     soft_deadline_ = soft_time ? deadline_after(*soft_time) : 0;
     hard_deadline_ = hard_time ? deadline_after(*hard_time) : 0;
 }
@@ -1118,10 +1134,15 @@ bool Search::should_stop(bool force_check)
     return stop_.load(std::memory_order_relaxed);
 }
 
-bool Search::soft_limit_reached() const
+bool Search::soft_limit_reached(double scale) const
 {
     const std::int64_t deadline = soft_deadline_.load(std::memory_order_relaxed);
-    return deadline != 0 && std::chrono::steady_clock::now().time_since_epoch().count() >= deadline;
+    if (deadline == 0) {
+        return false;
+    }
+    const std::int64_t start = soft_start_.load(std::memory_order_relaxed);
+    const auto scaled = start + static_cast<std::int64_t>(static_cast<double>(deadline - start) * scale);
+    return std::chrono::steady_clock::now().time_since_epoch().count() >= scaled;
 }
 
 bool Search::can_try_razoring(int depth, int ply, int alpha, int beta, bool in_check, int static_eval) const
