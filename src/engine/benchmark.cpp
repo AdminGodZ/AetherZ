@@ -147,6 +147,35 @@ const std::vector<SearchBenchPosition>& search_positions()
     return positions;
 }
 
+// Fixed position set for the deterministic search benchmark. Its total node
+// count acts as a search signature: refactors must keep it unchanged.
+const std::vector<std::string_view>& bench_fens()
+{
+    static const std::vector<std::string_view> fens{
+        Board::start_fen,
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "r1bq1rk1/ppp2ppp/2nbpn2/3p4/3P4/2PBPN2/PP3PPP/RNBQ1RK1 w - - 0 8",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "rnbqkb1r/pp3ppp/4pn2/2pp4/2PP4/2N2N2/PP2PPPP/R1BQKB1R w KQkq - 0 5",
+        "r2q1rk1/pp2bppp/2n1pn2/3p4/3P4/2NBPN2/PP3PPP/R2Q1RK1 b - - 3 10",
+        "2r2rk1/pp1bqpp1/2n1pn1p/3p4/3P4/P1NBPN2/1P2QPPP/2R2RK1 w - - 2 15",
+        "r1b2rk1/2q1bppp/p2p1n2/np2p3/3PP3/5N1P/PPBN1PP1/R1BQR1K1 w - - 1 13",
+        "8/8/1p1k4/p1p1p3/P1P1P3/1P1K4/8/8 w - - 0 40",
+        "6k1/5p2/6p1/8/7p/8/6PP/6K1 b - - 0 45",
+        "4r1k1/pp3ppp/2p5/8/3P4/2P5/PP3PPP/4R1K1 w - - 0 30",
+        "8/5pk1/6p1/1R5p/7P/6P1/r4PK1/8 b - - 5 50",
+        "2kr3r/ppp2ppp/2n5/2b1q3/4P3/2N1B3/PPP2PPP/R2QK2R w KQ - 0 12",
+        "r4rk1/ppqb1ppp/4pn2/3p4/1b1P4/2NBPN2/PPQ2PPP/R4RK1 w - - 4 12",
+        "8/8/4k3/8/2p5/2P5/3K4/8 w - - 0 60",
+        "7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
+    };
+    return fens;
+}
+
 const std::vector<TacticPosition>& tactic_positions()
 {
     static const std::vector<TacticPosition> positions{
@@ -158,7 +187,7 @@ const std::vector<TacticPosition>& tactic_positions()
 
 } // namespace
 
-int run_bench_command(std::ostream& output)
+int run_perft_bench_command(std::ostream& output)
 {
     struct BenchPosition {
         std::string_view fen;
@@ -181,13 +210,50 @@ int run_bench_command(std::ostream& output)
         }
         const auto nodes = perft(*board, position.depth);
         total_nodes += nodes;
-        output << "bench depth " << position.depth << " nodes " << nodes << '\n';
+        output << "perftbench depth " << position.depth << " nodes " << nodes << '\n';
     }
 
     const auto total_ms = elapsed_ms(start);
-    output << "bench total nodes " << total_nodes
+    output << "perftbench total nodes " << total_nodes
            << " time " << total_ms
            << " nps " << (total_nodes * 1000 / total_ms) << '\n';
+    return 0;
+}
+
+int run_bench_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error)
+{
+    constexpr int default_bench_depth = 10;
+    const int depth = parse_positive_int(args, 1).value_or(default_bench_depth);
+    if (args.size() > 1 && !parse_positive_int(args, 1)) {
+        error << "usage: aetherz bench [depth]\n";
+        return 1;
+    }
+
+    Search search;
+    std::uint64_t total_nodes = 0;
+    const auto start = std::chrono::steady_clock::now();
+
+    for (const std::string_view fen : bench_fens()) {
+        auto board = Board::from_fen(fen);
+        if (!board) {
+            error << "invalid bench FEN: " << fen << '\n';
+            return 1;
+        }
+
+        SearchLimits limits;
+        limits.max_depth = depth;
+        limits.position_history = {board->hash()};
+
+        search.clear_hash();
+        const SearchResult result = search.find_best_move(*board, limits);
+        total_nodes += result.nodes;
+    }
+
+    const auto total_ms = elapsed_ms(start);
+    output << "bench depth " << depth
+           << " positions " << bench_fens().size()
+           << " time " << total_ms << '\n';
+    output << total_nodes << " nodes " << (total_nodes * 1000 / total_ms) << " nps\n";
     return 0;
 }
 

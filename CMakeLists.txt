@@ -7,6 +7,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+option(AETHERZ_NATIVE "Optimize for the host CPU" ON)
+option(AETHERZ_LTO "Enable link-time optimization" ON)
+
+if(AETHERZ_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT aetherz_ipo_supported OUTPUT aetherz_ipo_output)
+    if(aetherz_ipo_supported)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
+endif()
+
 add_executable(aetherz
     src/main.cpp
 )
@@ -36,6 +51,18 @@ target_compile_options(aetherz_engine PRIVATE
     -Wextra
     -Wpedantic
 )
+
+target_compile_options(aetherz_engine PUBLIC
+    $<$<CONFIG:Release>:-O3>
+)
+
+if(AETHERZ_NATIVE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        target_compile_options(aetherz_engine PUBLIC -mcpu=native)
+    else()
+        target_compile_options(aetherz_engine PUBLIC -march=native)
+    endif()
+endif()
 
 target_link_libraries(aetherz PRIVATE aetherz_engine)
 
