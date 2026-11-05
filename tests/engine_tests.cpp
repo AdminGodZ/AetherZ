@@ -652,6 +652,25 @@ void test_search_benchmark_command_reports_summary()
     require(text.find("searchbench summary") != std::string::npos, "searchbench reports summary");
 }
 
+void test_bench_command_is_deterministic()
+{
+    auto run_bench = [] {
+        std::ostringstream output;
+        std::ostringstream error;
+        const int status = aetherz::run_bench_command({"bench", "4"}, output, error);
+        require(status == 0, "bench command succeeds");
+        require(error.str().empty(), "bench command has no errors");
+
+        const std::string text = output.str();
+        const auto nodes_end = text.find(" nodes ");
+        require(nodes_end != std::string::npos, "bench reports node count");
+        const auto nodes_begin = text.rfind('\n', nodes_end) + 1;
+        return text.substr(nodes_begin, nodes_end - nodes_begin);
+    };
+
+    require(run_bench() == run_bench(), "bench node count is deterministic");
+}
+
 void test_selfplay_command_reports_summary()
 {
     std::ostringstream output;
@@ -738,6 +757,7 @@ int main()
     test_uci_accepts_nnue_options();
     test_training_data_command_writes_bullet_text();
     test_search_benchmark_command_reports_summary();
+    test_bench_command_is_deterministic();
     test_selfplay_command_reports_summary();
     test_tactics_command_passes_regressions();
     test_epd_test_command_reports_summary();

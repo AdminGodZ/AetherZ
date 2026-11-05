@@ -28,7 +28,14 @@ int main(int argc, char** argv)
     }
 
     if (args.size() > 1 && args[1] == "bench") {
-        return aetherz::run_bench_command(std::cout);
+        return aetherz::run_bench_command(
+            std::vector<std::string>{args.begin() + 1, args.end()},
+            std::cout,
+            std::cerr);
+    }
+
+    if (args.size() > 1 && args[1] == "perftbench") {
+        return aetherz::run_perft_bench_command(std::cout);
     }
 
     if (args.size() > 1 && args[1] == "searchbench") {

@@ -180,7 +180,9 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
         } else if (command == "moves") {
             handle_moves(output);
         } else if (command == "bench") {
-            run_bench_command(output);
+            run_bench_command(tokens, output, output);
+        } else if (command == "perftbench") {
+            run_perft_bench_command(output);
         } else if (command == "searchbench") {
             run_search_bench_command(tokens, output, output);
         } else if (command == "tactics") {
