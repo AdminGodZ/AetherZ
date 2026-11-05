@@ -325,6 +325,33 @@ void test_repeated_search_uses_transposition_table()
     require(second.tt_hits > 0, "repeated search produces TT hits");
 }
 
+void test_evaluation_trace_rebuilds_evaluation()
+{
+    const std::array<std::string_view, 3> fens{
+        aetherz::Board::start_fen,
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    };
+
+    const auto& weights = aetherz::eval_weights();
+    for (const auto fen : fens) {
+        const auto board = *aetherz::Board::from_fen(fen);
+        aetherz::EvalTrace trace;
+        const int traced = aetherz::evaluate_white_traced(board, trace);
+
+        long middlegame = 0;
+        long endgame = 0;
+        for (int index = 0; index < aetherz::eval_index::count; ++index) {
+            middlegame += static_cast<long>(trace.coefficients[index]) * weights[index].middlegame;
+            endgame += static_cast<long>(trace.coefficients[index]) * weights[index].endgame;
+        }
+        const long rebuilt = (middlegame * trace.phase + endgame * (aetherz::max_eval_phase - trace.phase)) / aetherz::max_eval_phase;
+
+        require(traced == aetherz::evaluate_white(board), "traced evaluation matches evaluation");
+        require(rebuilt == traced, "evaluation trace rebuilds the evaluation from the weights");
+    }
+}
+
 void test_evaluation_is_balanced_at_start()
 {
     const auto board = aetherz::Board::startpos();
@@ -470,8 +497,10 @@ void test_search_prefers_castling_over_king_walk()
 
     require(board.has_value(), "castling search FEN parses");
 
+    // At very low depth developing moves such as Ne5 are just as good, so
+    // search deep enough for king safety to decide.
     aetherz::Search search;
-    const auto result = search.find_best_move(*board, 2);
+    const auto result = search.find_best_move(*board, 8);
 
     require(result.best_move.has_value(), "castling search finds a move");
     const std::string best = aetherz::move_to_uci(*result.best_move);
@@ -888,6 +917,7 @@ int main()
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
+    test_evaluation_trace_rebuilds_evaluation();
     test_evaluation_is_balanced_at_start();
     test_evaluation_rewards_material();
     test_piece_square_tables_reward_active_knight();
