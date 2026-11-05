@@ -660,9 +660,11 @@ int evaluate_white(const Board& board)
     for (int type_index = 0; type_index < 6; ++type_index) {
         const auto type = static_cast<PieceType>(type_index);
 
+        // The tables are written rank 8 first (as printed, from white's
+        // side), so white squares are flipped and black squares used as is.
         Bitboard white_pieces = board.pieces(Color::White, type);
         while (white_pieces != 0) {
-            const int square = pop_lsb(white_pieces);
+            const int square = mirror_square(pop_lsb(white_pieces));
             middlegame += mg_values[type_index] + mg_tables[type_index][square];
             endgame += eg_values[type_index] + eg_tables[type_index][square];
             phase += phase_weights[type_index];
@@ -670,7 +672,7 @@ int evaluate_white(const Board& board)
 
         Bitboard black_pieces = board.pieces(Color::Black, type);
         while (black_pieces != 0) {
-            const int square = mirror_square(pop_lsb(black_pieces));
+            const int square = pop_lsb(black_pieces);
             middlegame -= mg_values[type_index] + mg_tables[type_index][square];
             endgame -= eg_values[type_index] + eg_tables[type_index][square];
             phase += phase_weights[type_index];
