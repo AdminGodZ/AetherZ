@@ -970,13 +970,13 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
             continue;
         }
 
-        Board::UndoState undo;
-        if (!make_legal_move(board, move, undo)) {
+        // Quiet moves are only searched here when they give check.
+        if (!in_check && !is_tactical(move) && !board.gives_check(move)) {
             continue;
         }
-        const bool gives_check = board.in_check(board.side_to_move());
-        if (!in_check && !is_tactical(move) && !gives_check) {
-            board.unmake_move(undo);
+
+        Board::UndoState undo;
+        if (!make_legal_move(board, move, undo)) {
             continue;
         }
         push_position(board);
