@@ -479,12 +479,12 @@ void Search::clear()
     for (auto& row : history_) {
         row.fill(0);
     }
-    for (auto& table : continuation_history_) {
+    for (auto& table : *continuation_history_) {
         for (auto& row : table) {
             row.fill(0);
         }
     }
-    for (auto& table : correction_history_) {
+    for (auto& table : *correction_history_) {
         table.fill(0);
     }
     for (const auto& helper : helpers_) {
@@ -1113,12 +1113,12 @@ std::size_t Search::correction_index(const Board& board)
 
 int& Search::correction_entry(const Board& board)
 {
-    return correction_history_[color_index(board.side_to_move())][correction_index(board)];
+    return (*correction_history_)[color_index(board.side_to_move())][correction_index(board)];
 }
 
 int Search::correction_entry(const Board& board) const
 {
-    return correction_history_[color_index(board.side_to_move())][correction_index(board)];
+    return (*correction_history_)[color_index(board.side_to_move())][correction_index(board)];
 }
 
 std::optional<Move> MovePicker::next()
@@ -1431,7 +1431,7 @@ int Search::continuation_score(const Move& move, Move previous_move) const
         return 0;
     }
 
-    return continuation_history_[previous_move.to][move.from][move.to] / 2;
+    return (*continuation_history_)[previous_move.to][move.from][move.to] / 2;
 }
 
 int Search::quiet_history_score(const Move& move, Move previous_move) const
@@ -1525,14 +1525,14 @@ void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_m
 
     update(history_[move.from][move.to], bonus);
     if (has_previous) {
-        update(continuation_history_[previous_move.to][move.from][move.to], bonus * 2);
+        update((*continuation_history_)[previous_move.to][move.from][move.to], bonus * 2);
     }
 
     // Quiet moves searched before the cutoff move failed to cut off.
     for (const Move& tried : quiets_tried) {
         update(history_[tried.from][tried.to], -bonus);
         if (has_previous) {
-            update(continuation_history_[previous_move.to][tried.from][tried.to], -bonus * 2);
+            update((*continuation_history_)[previous_move.to][tried.from][tried.to], -bonus * 2);
         }
     }
 }

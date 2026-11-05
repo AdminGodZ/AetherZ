@@ -22,6 +22,16 @@ if(AETHERZ_LTO)
     endif()
 endif()
 
+# Windows gives the main thread only 1 MB (MSVC) or 2 MB (MinGW) of stack.
+# Searches started from the command line (bench, tests, tools) run there.
+if(WIN32)
+    if(MSVC)
+        add_link_options(/STACK:16777216)
+    else()
+        add_link_options(-Wl,--stack,16777216)
+    endif()
+endif()
+
 add_executable(aetherz
     src/main.cpp
 )

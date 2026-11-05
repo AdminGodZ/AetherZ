@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -24,6 +25,13 @@
 #include <string_view>
 
 namespace {
+
+// A scratch file in the system temporary directory, which also exists on
+// Windows (unlike /tmp).
+std::string temp_path(std::string_view name)
+{
+    return (std::filesystem::temp_directory_path() / name).string();
+}
 
 void require(bool condition, std::string_view message)
 {
@@ -352,6 +360,13 @@ long deep_recursion(int depth, const unsigned char* previous)
     return below + (previous == nullptr ? 0 : previous[index] - (depth + 1) % 256);
 }
 
+void test_search_object_fits_on_a_small_stack()
+{
+    // Command-line searches put a Search on the main thread's stack, which
+    // is only 1 MB with MSVC on Windows.
+    require(sizeof(aetherz::Search) < 64 * 1024, "Search keeps its large tables off the stack");
+}
+
 void test_search_thread_has_a_large_stack()
 {
     // About 6 MB: more than the default stack of secondary threads on
@@ -635,7 +650,7 @@ void test_uci_go_time_controls()
 
 void test_nnue_placeholder_loads_and_falls_back_to_classical_eval()
 {
-    const std::string path = "/tmp/aetherz_dummy.nnue";
+    const std::string path = temp_path("aetherz_dummy.nnue");
     {
         std::ofstream output{path};
         output << "AETHERZ_NNUE_V1\n";
@@ -659,7 +674,7 @@ void test_nnue_placeholder_loads_and_falls_back_to_classical_eval()
 
 void test_nnue_tiny_network_uses_halfka_feature()
 {
-    const std::string path = "/tmp/aetherz_tiny_feature.nnue";
+    const std::string path = temp_path("aetherz_tiny_feature.nnue");
     const int feature = aetherz::nnue::halfka_feature_index(
         aetherz::Color::White,
         4,
@@ -701,7 +716,7 @@ void test_nnue_tiny_network_uses_halfka_feature()
 
 void test_nnue_incremental_push_matches_refresh()
 {
-    const std::string path = "/tmp/aetherz_tiny_incremental.nnue";
+    const std::string path = temp_path("aetherz_tiny_incremental.nnue");
     const int feature = aetherz::nnue::halfka_feature_index(
         aetherz::Color::White,
         4,
@@ -832,7 +847,7 @@ void test_time_plan_stays_within_clock()
 
 void test_uci_accepts_nnue_options()
 {
-    const std::string path = "/tmp/aetherz_uci_dummy.nnue";
+    const std::string path = temp_path("aetherz_uci_dummy.nnue");
     {
         std::ofstream output{path};
         output << "AETHERZ_NNUE_V1\n";
@@ -840,11 +855,9 @@ void test_uci_accepts_nnue_options()
     }
 
     std::istringstream input{
-        "uci\n"
-        "setoption name UseNNUE value true\n"
-        "setoption name EvalFile value /tmp/aetherz_uci_dummy.nnue\n"
-        "isready\n"
-        "quit\n"};
+        std::string{"uci\nsetoption name UseNNUE value true\n"}
+        + "setoption name EvalFile value " + path + "\n"
+        + "isready\nquit\n"};
     std::ostringstream output;
 
     aetherz::UciEngine engine;
@@ -853,13 +866,13 @@ void test_uci_accepts_nnue_options()
     const std::string text = output.str();
     require(text.find("option name UseNNUE") != std::string::npos, "UCI exposes UseNNUE");
     require(text.find("option name EvalFile") != std::string::npos, "UCI exposes EvalFile");
-    require(text.find("info string loaded NNUE /tmp/aetherz_uci_dummy.nnue") != std::string::npos, "UCI loads placeholder NNUE");
+    require(text.find("info string loaded NNUE " + path) != std::string::npos, "UCI loads placeholder NNUE");
     require(text.find("readyok") != std::string::npos, "UCI remains ready after NNUE load");
 }
 
 void test_training_data_command_writes_bullet_text()
 {
-    const std::string path = "/tmp/aetherz_train_sample.txt";
+    const std::string path = temp_path("aetherz_train_sample.txt");
     std::ostringstream output;
     std::ostringstream error;
 
@@ -937,7 +950,7 @@ void test_tactics_command_passes_regressions()
 
 void test_epd_test_command_reports_summary()
 {
-    const std::string path = "/tmp/aetherz_epd_sample.epd";
+    const std::string path = temp_path("aetherz_epd_sample.epd");
     {
         std::ofstream output{path};
         output << "7k/8/5KQ1/8/8/8/8/8 w - - bm Qg7#; id \"mate.1\";\n";
@@ -975,6 +988,7 @@ int main()
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
     test_search_thread_has_a_large_stack();
+    test_search_object_fits_on_a_small_stack();
     test_multithreaded_search_finds_mate_and_stops();
     test_evaluation_trace_rebuilds_evaluation();
     test_evaluation_is_balanced_at_start();
