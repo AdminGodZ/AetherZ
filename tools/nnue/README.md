@@ -1,10 +1,23 @@
 # AetherZ NNUE Tooling
 
-Generate first training positions:
+Generate training positions with self-play:
 
 ```sh
-./build/aetherz traindata data/aetherz-train.txt 10000 3 80
+./build/aetherz datagen data/aetherz-train.txt --games 100000 --threads 22 --nodes 5000
 ```
+
+- Each game starts with 8 or 9 random moves (`--random-plies`) and is then
+  played by the engine at a fixed node budget per move (`--nodes`), so the
+  data does not depend on machine speed or load.
+- Games are played to a real result: mate, stalemate, repetition, fifty
+  moves, insufficient material, or adjudication once one side leads by 2000
+  cp for six plies (or the score stays within 10 cp for twelve plies after
+  ply 80). Openings scored beyond 1000 cp are replayed.
+- A position is kept when the side to move is not in check, the move played
+  from it is not a capture or promotion, and its score is not a mate score.
+- Every game depends only on `--seed` and its game number, so the output is
+  the same whatever the thread count. Use a new seed for every new batch.
+  Output is appended to the file.
 
 The output format is Bullet's simple text shape:
 

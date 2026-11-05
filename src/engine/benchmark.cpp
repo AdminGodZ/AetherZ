@@ -9,10 +9,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <fstream>
 #include <optional>
 #include <ostream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -546,74 +544,6 @@ int run_arasan_command(const std::vector<std::string>& args, std::ostream& outpu
         return 1;
     }
     return run_epd_test_command(epd_args, output, error);
-}
-
-int run_training_data_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error)
-{
-    if (args.size() < 2 || args.size() > 5) {
-        error << "usage: aetherz traindata <output-file> [positions] [depth] [max-plies]\n";
-        return 1;
-    }
-
-    const int target_positions = parse_positive_int(args, 2).value_or(100);
-    const int depth = parse_positive_int(args, 3).value_or(2);
-    const int max_plies = parse_positive_int(args, 4).value_or(80);
-
-    std::ofstream data{args[1]};
-    if (!data) {
-        error << "could not open training data output file\n";
-        return 1;
-    }
-
-    Board board = Board::startpos();
-    Search search;
-    std::vector<std::uint64_t> history{board.hash()};
-    std::mt19937_64 rng{0x4145544845525aULL};
-
-    int generated = 0;
-    int ply = 0;
-    while (generated < target_positions) {
-        const auto legal_moves = board.generate_legal_moves();
-        if (legal_moves.empty() || ply >= max_plies || repetition_count(history, board.hash()) >= 3) {
-            board = Board::startpos();
-            history = {board.hash()};
-            ply = 0;
-            continue;
-        }
-
-        SearchLimits limits;
-        limits.max_depth = depth;
-        limits.position_history = history;
-        Board search_board = board;
-        const SearchResult result = search.find_best_move(search_board, limits);
-        const int side_score = result.score;
-        const int white_score = board.side_to_move() == Color::White ? side_score : -side_score;
-        const std::string_view game_result = white_score > 200 ? "1.0" : white_score < -200 ? "0.0" : "0.5";
-
-        data << board.to_fen() << " | " << white_score << " | " << game_result << '\n';
-        ++generated;
-
-        std::uniform_int_distribution<std::size_t> distribution{0, legal_moves.size() - 1};
-        const Move move = result.best_move && (generated % 3 == 0)
-            ? *result.best_move
-            : legal_moves[distribution(rng)];
-
-        Board::UndoState undo;
-        if (!board.make_move(move, undo)) {
-            board = Board::startpos();
-            history = {board.hash()};
-            ply = 0;
-            continue;
-        }
-
-        history.push_back(board.hash());
-        ++ply;
-    }
-
-    output << "traindata wrote " << generated
-           << " positions depth " << depth
-           << " to " << args[1] << '\n';
-    return 0;
 }
 
 } // namespace aetherz

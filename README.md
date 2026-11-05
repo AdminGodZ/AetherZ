@@ -33,6 +33,7 @@ ctest --test-dir build --output-on-failure
 ./build/aetherz divide 2
 ./build/aetherz bench
 ./build/aetherz perftbench
+./build/aetherz datagen data/train.txt --games 1000 --threads 8
 ./build/aetherz searchbench 2
 ./build/aetherz tactics 3
 ./build/aetherz selfplay 1 2 80
