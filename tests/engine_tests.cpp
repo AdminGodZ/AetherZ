@@ -7,15 +7,18 @@
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 #include "engine/see.hpp"
+#include "engine/thread.hpp"
 #include "engine/types.hpp"
 #include "engine/uci.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -331,6 +334,35 @@ void test_multithreaded_search_finds_mate_and_stops()
 
     search.set_threads(1);
     require(search.threads() == 1, "search can return to a single thread");
+}
+
+// Uses about 16 KB of stack per call. The call goes through a volatile
+// function pointer and reads the caller's buffer at an index only known at
+// run time, so the optimizer can neither inline the recursion nor shrink the
+// buffers.
+long deep_recursion(int depth, const unsigned char* previous);
+long (*volatile recurse)(int, const unsigned char*) = deep_recursion;
+
+long deep_recursion(int depth, const unsigned char* previous)
+{
+    unsigned char buffer[16 * 1024];
+    std::fill(std::begin(buffer), std::end(buffer), static_cast<unsigned char>(depth));
+    const long below = depth == 0 ? 0 : recurse(depth - 1, buffer);
+    const std::size_t index = static_cast<std::size_t>(depth) * 37 % sizeof(buffer);
+    return below + (previous == nullptr ? 0 : previous[index] - (depth + 1) % 256);
+}
+
+void test_search_thread_has_a_large_stack()
+{
+    // About 6 MB: more than the default stack of secondary threads on
+    // macOS (512 KB) and Windows (1 MB).
+    int result = -1;
+    aetherz::SearchThread thread{[&result] {
+        result = static_cast<int>(deep_recursion(384, nullptr));
+    }};
+    thread.join();
+    require(result == 0, "search thread runs deep recursion");
+    require(!thread.joinable(), "joined search thread is no longer joinable");
 }
 
 void test_repeated_search_uses_transposition_table()
@@ -939,6 +971,7 @@ int main()
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
+    test_search_thread_has_a_large_stack();
     test_multithreaded_search_finds_mate_and_stops();
     test_evaluation_trace_rebuilds_evaluation();
     test_evaluation_is_balanced_at_start();

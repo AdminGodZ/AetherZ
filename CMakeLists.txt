@@ -38,6 +38,7 @@ add_library(aetherz_engine
     src/engine/perft.cpp
     src/engine/search.cpp
     src/engine/see.cpp
+    src/engine/thread.cpp
     src/engine/types.cpp
     src/engine/uci.cpp
 )
@@ -45,6 +46,9 @@ add_library(aetherz_engine
 target_include_directories(aetherz_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+find_package(Threads REQUIRED)
+target_link_libraries(aetherz_engine PUBLIC Threads::Threads)
 
 # MSVC (and clang-cl) already optimize Release builds with /O2 and have no
 # native-CPU switch; the optimization flags below are for GCC and Clang,
@@ -72,8 +76,6 @@ else()
 endif()
 
 target_link_libraries(aetherz PRIVATE aetherz_engine)
-
-find_package(Threads REQUIRED)
 
 # The match runner drives engines through POSIX pipes and processes. On
 # Windows, build it under WSL or use fastchess/cutechess instead.

@@ -2,6 +2,7 @@
 
 #include "engine/board.hpp"
 #include "engine/search.hpp"
+#include "engine/thread.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -11,7 +12,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace aetherz {
@@ -47,7 +47,7 @@ private:
     std::ostream* output_ = nullptr;
     std::mutex output_mutex_;
 
-    std::thread search_thread_;
+    SearchThread search_thread_;
     std::mutex state_mutex_;
     std::condition_variable state_changed_;
     // Infinite and ponder searches must not report bestmove before the GUI

@@ -2,6 +2,7 @@
 
 #include "engine/evaluate.hpp"
 #include "engine/see.hpp"
+#include "engine/thread.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,7 +12,6 @@
 #include <cstddef>
 #include <limits>
 #include <sstream>
-#include <thread>
 
 namespace aetherz {
 namespace {
@@ -351,7 +351,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
         limits.on_search_started();
     }
 
-    std::vector<std::thread> helper_threads;
+    std::vector<SearchThread> helper_threads;
     helpers_stop_ = false;
     for (const auto& helper : helpers_) {
         helper_threads.emplace_back([helper = helper.get(), board, history = limits.position_history]() mutable {
@@ -439,7 +439,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     }
 
     helpers_stop_ = true;
-    for (std::thread& thread : helper_threads) {
+    for (SearchThread& thread : helper_threads) {
         thread.join();
     }
 
