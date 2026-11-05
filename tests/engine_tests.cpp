@@ -830,6 +830,24 @@ void test_uci_ponder_waits_for_ponderhit()
     require(count_occurrences(text, "bestmove ") == 1, "ponder search reports bestmove after ponderhit");
 }
 
+void test_uci_movetime_uses_the_full_time()
+{
+    std::istringstream input{
+        "position startpos\n"
+        "go movetime 400\n"};
+    std::ostringstream output;
+
+    const auto start = std::chrono::steady_clock::now();
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    require(output.str().find("bestmove ") != std::string::npos, "movetime search reports bestmove");
+    // 400 ms minus the 30 ms default move overhead, with some slack.
+    require(elapsed >= std::chrono::milliseconds{330}, "movetime search does not stop early");
+    require(elapsed < std::chrono::milliseconds{1500}, "movetime search stops at its limit");
+}
+
 void test_time_plan_stays_within_clock()
 {
     for (const int remaining : {50, 1000, 10000, 60000, 600000}) {
@@ -1016,6 +1034,7 @@ int main()
     test_uci_depth_search_finishes_at_end_of_input();
     test_uci_reports_mate_scores();
     test_uci_ponder_waits_for_ponderhit();
+    test_uci_movetime_uses_the_full_time();
     test_time_plan_stays_within_clock();
     test_training_data_command_writes_bullet_text();
     test_search_benchmark_command_reports_summary();
