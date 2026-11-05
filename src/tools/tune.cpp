@@ -323,7 +323,7 @@ void write_weights(const std::string& path, const Weights& weights)
 void usage()
 {
     std::cerr << "usage: aetherz-tune --out <eval_weights.inc> [--epochs N] [--rate R] [--skip-plies N]\n"
-              << "                    [--threads N] <games-file>...\n";
+              << "                    [--regularization L] [--threads N] <games-file>...\n";
 }
 
 } // namespace
@@ -334,6 +334,7 @@ int main(int argc, char** argv)
     int epochs = 2000;
     double rate = 1.0;
     int skip_plies = 16;
+    double regularization = 0.0;
     int threads = static_cast<int>(std::max(1U, std::thread::hardware_concurrency()));
     std::vector<std::string> inputs;
 
@@ -353,6 +354,8 @@ int main(int argc, char** argv)
                 epochs = std::stoi(next());
             } else if (argument == "--rate") {
                 rate = std::stod(next());
+            } else if (argument == "--regularization") {
+                regularization = std::stod(next());
             } else if (argument == "--skip-plies") {
                 skip_plies = std::stoi(next());
             } else if (argument == "--threads") {
@@ -394,19 +397,28 @@ int main(int argc, char** argv)
     std::cout << std::fixed << std::setprecision(6)
               << "scale K " << k << ", initial error " << mean_error(data, weights, k, threads) << std::endl;
 
-    // Adam.
+    // The pawn value is held fixed to anchor the scale: otherwise all
+    // weights drift together, and search margins in centipawns lose their
+    // meaning. The king has no material value.
+    auto frozen = [](std::size_t index) {
+        const auto weight = static_cast<int>(index / 2);
+        return weight == aetherz::eval_index::material + 0 || weight == aetherz::eval_index::material + 5;
+    };
+    const Weights initial_weights = weights;
+
+    // Adam, with optional L2 regularization towards the starting weights.
     constexpr double beta1 = 0.9;
     constexpr double beta2 = 0.999;
     constexpr double epsilon = 1e-8;
     Weights first_moment(weights.size(), 0.0);
     Weights second_moment(weights.size(), 0.0);
     for (int epoch = 1; epoch <= epochs; ++epoch) {
-        const Weights grad = gradient(data, weights, k, threads);
+        Weights grad = gradient(data, weights, k, threads);
         for (std::size_t index = 0; index < weights.size(); ++index) {
-            // The king has no material value.
-            if (index / 2 == static_cast<std::size_t>(aetherz::eval_index::material + 5)) {
+            if (frozen(index)) {
                 continue;
             }
+            grad[index] += regularization * (weights[index] - initial_weights[index]);
             first_moment[index] = beta1 * first_moment[index] + (1.0 - beta1) * grad[index];
             second_moment[index] = beta2 * second_moment[index] + (1.0 - beta2) * grad[index] * grad[index];
             const double corrected_first = first_moment[index] / (1.0 - std::pow(beta1, epoch));

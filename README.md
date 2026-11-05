@@ -90,14 +90,18 @@ match runner, then tune and rebuild:
 ```bash
 ./build/aetherz_match --engine1 ./build/aetherz --engine2 ./build/aetherz \
     --tc 1+0.01 --concurrency 12 --pairs 20000 --games selfplay.txt
-./build/aetherz_tune --out src/engine/eval_weights.inc --epochs 3000 selfplay.txt
+./build/aetherz_tune --out src/engine/eval_weights.inc --epochs 2000 \
+    --regularization 0.0000003 selfplay.txt
 cmake --build build
 ```
 
 The tuner keeps quiet positions (not in check, and the move played was not a
 capture or promotion), skips the opening plies, fits the logistic scale once
-and then runs Adam on all weights. Always confirm a new set of weights with
-an SPRT before committing it.
+and then runs Adam on all weights. The pawn value is held fixed, and the L2
+regularization pulls weights towards their starting values: without it, a
+few thousand games overfit badly (an unregularized run lost about 140 Elo,
+while the regularized one won about 200). Always confirm a new set of
+weights with an SPRT before committing it.
 
 ## UCI Examples
 
