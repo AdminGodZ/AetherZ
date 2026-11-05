@@ -497,8 +497,10 @@ void test_search_prefers_castling_over_king_walk()
 
     require(board.has_value(), "castling search FEN parses");
 
+    // At very low depth developing moves such as Ne5 are just as good, so
+    // search deep enough for king safety to decide.
     aetherz::Search search;
-    const auto result = search.find_best_move(*board, 2);
+    const auto result = search.find_best_move(*board, 8);
 
     require(result.best_move.has_value(), "castling search finds a move");
     const std::string best = aetherz::move_to_uci(*result.best_move);
