@@ -7,6 +7,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <sstream>
@@ -77,6 +78,17 @@ int promotion_score(PieceType type)
 {
     return piece_value(type);
 }
+
+// Base late-move reductions by depth and move number.
+const std::array<std::array<int, 64>, 64> lmr_table = [] {
+    std::array<std::array<int, 64>, 64> table{};
+    for (int depth = 1; depth < 64; ++depth) {
+        for (int move_number = 1; move_number < 64; ++move_number) {
+            table[depth][move_number] = static_cast<int>(0.75 + std::log(depth) * std::log(move_number) / 2.25);
+        }
+    }
+    return table;
+}();
 
 int reverse_futility_margin(int depth, bool improving)
 {
@@ -724,7 +736,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             board.unmake_move(undo);
             continue;
         }
-        if (can_prune_late_move(move, depth, move_index, ply, in_check, gives_check, previous_move)) {
+        if (!pv_node && can_prune_late_move(move, depth, move_index, ply, in_check, gives_check, improving, previous_move)) {
             board.unmake_move(undo);
             continue;
         }
@@ -736,7 +748,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         const int extension = tactical_extension(move, depth, ply, gives_check, see_gain);
         const int full_depth = std::max(0, depth - 1 + extension);
         const int reduction = searched_move
-            ? late_move_reduction(move, depth, ply, searched_moves, in_check, gives_check, previous_move)
+            ? late_move_reduction(move, depth, ply, searched_moves, in_check, gives_check, pv_node, improving, previous_move)
             : 0;
         const int child_depth = std::max(0, full_depth - reduction);
 
@@ -1108,9 +1120,10 @@ bool Search::can_prune_late_move(
     int ply,
     bool in_check,
     bool gives_check,
+    bool improving,
     Move previous_move) const
 {
-    if (depth > 2 || in_check || gives_check || !is_quiet(move)) {
+    if (depth > 6 || in_check || gives_check || !is_quiet(move)) {
         return false;
     }
     if (ply >= 0 && ply < max_ply && (same_move(move, killer_moves_[ply][0]) || same_move(move, killer_moves_[ply][1]))) {
@@ -1120,8 +1133,8 @@ bool Search::can_prune_late_move(
         return false;
     }
 
-    const int threshold = depth == 1 ? 12 : 24;
-    return move_index > threshold;
+    const int threshold = (3 + depth * depth) / (improving ? 1 : 2);
+    return move_index > threshold + 2;
 }
 
 bool Search::has_non_pawn_material(const Board& board, Color color) const
@@ -1159,38 +1172,27 @@ int Search::late_move_reduction(
     int move_index,
     bool in_check,
     bool gives_check,
+    bool pv_node,
+    bool improving,
     Move previous_move) const
 {
-    if (depth < 3 || ply <= 0 || in_check || gives_check || move_index < 4) {
+    if (depth < 3 || ply <= 0 || in_check || move_index < (pv_node ? 4 : 3)) {
         return 0;
     }
     if (!is_quiet(move)) {
         return 0;
     }
+
+    int reduction = lmr_table[std::min(depth, 63)][std::min(move_index, 63)];
+    reduction += pv_node ? -1 : 0;
+    reduction += improving ? 0 : 1;
+    reduction -= gives_check ? 1 : 0;
     if (ply < max_ply && (same_move(move, killer_moves_[ply][0]) || same_move(move, killer_moves_[ply][1]))) {
-        return 0;
-    }
-
-    int reduction = 1;
-    if (depth >= 5 && move_index >= 6) {
-        ++reduction;
-    }
-    if (depth >= 7 && move_index >= 12) {
-        ++reduction;
-    }
-    if (depth >= 6 && move_index >= 20) {
-        ++reduction;
-    }
-
-    const int history_score = quiet_history_score(move, previous_move);
-    if (history_score > 0) {
         --reduction;
     }
-    if (history_score > 400) {
-        --reduction;
-    }
+    reduction -= quiet_history_score(move, previous_move) / 6000;
 
-    return std::clamp(reduction, 0, depth - 1);
+    return std::clamp(reduction, 0, depth - 2);
 }
 
 bool Search::is_draw(const Board& board, int ply) const

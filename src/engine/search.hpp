@@ -215,6 +215,7 @@ private:
         int ply,
         bool in_check,
         bool gives_check,
+        bool improving,
         Move previous_move) const;
     [[nodiscard]] bool has_non_pawn_material(const Board& board, Color color) const;
     [[nodiscard]] int tactical_extension(const Move& move, int depth, int ply, bool gives_check, int see_gain) const;
@@ -225,6 +226,8 @@ private:
         int move_index,
         bool in_check,
         bool gives_check,
+        bool pv_node,
+        bool improving,
         Move previous_move) const;
     [[nodiscard]] bool is_draw(const Board& board, int ply) const;
     [[nodiscard]] int repetition_count(const Board& board) const;
