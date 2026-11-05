@@ -73,6 +73,10 @@ and runs a sequential probability ratio test (SPRT) on the results:
   least 1000 cp for six plies, and as draws after twelve plies within 10 cp
   past ply 80.
 - `--games` appends every finished game (result, reason, opening, moves).
+- Generating thousands of random openings takes a few minutes; save them
+  once with `--save-openings book.epd` and pass `--openings book.epd` later.
+- The SPRT never concludes before 50 game pairs: variance estimates from a
+  handful of pairs are unreliable.
 
 ## UCI Examples
 

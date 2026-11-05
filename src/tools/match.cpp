@@ -70,6 +70,7 @@ struct MatchConfig {
     double alpha = 0.05;
     double beta = 0.05;
     std::optional<std::string> games_file;
+    std::optional<std::string> save_openings_file;
     int report_every = 10;
 };
 
@@ -629,10 +630,15 @@ PairSummary summarize(const Statistics& stats)
     return summary;
 }
 
+// The variance estimate is meaningless on a handful of pairs (two identical
+// pair results give a variance near zero and an enormous LLR), so the SPRT
+// may not conclude before this many pairs.
+constexpr int min_sprt_pairs = 50;
+
 double log_likelihood_ratio(const Statistics& stats, double elo0, double elo1)
 {
     const int pairs = stats.pairs();
-    if (pairs == 0) {
+    if (pairs < min_sprt_pairs) {
         return 0.0;
     }
 
@@ -699,7 +705,8 @@ void usage()
         << "  --random-plies <n>             plies for random openings (default 8)\n"
         << "  --seed <n>                     opening seed\n"
         << "  --sprt <elo0> <elo1>           stop when the SPRT concludes (alpha=beta=0.05)\n"
-        << "  --games <file>                 append finished games to a file\n";
+        << "  --games <file>                 append finished games to a file\n"
+        << "  --save-openings <file>         write the generated openings to a file for reuse\n";
 }
 
 std::optional<std::pair<std::string, std::string>> parse_option(const std::string& text)
@@ -767,6 +774,8 @@ std::optional<MatchConfig> parse_arguments(int argc, char** argv)
                 config.elo1 = std::stod(next());
             } else if (argument == "--games") {
                 config.games_file = next();
+            } else if (argument == "--save-openings") {
+                config.save_openings_file = next();
             } else {
                 throw std::invalid_argument{"unknown argument " + argument};
             }
@@ -805,6 +814,12 @@ int main(int argc, char** argv)
     } else {
         std::cout << "generating " << config.pairs << " random openings..." << std::endl;
         openings = generate_openings(config.pairs, config.random_opening_plies, config.seed);
+        if (config.save_openings_file) {
+            std::ofstream saved{*config.save_openings_file};
+            for (const std::string& opening : openings) {
+                saved << opening << '\n';
+            }
+        }
     }
 
     std::ofstream games_output;
