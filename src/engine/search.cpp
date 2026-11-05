@@ -56,6 +56,11 @@ int piece_value(PieceType type)
     return middlegame_piece_value(type);
 }
 
+int move_key(const Move& move)
+{
+    return (move.from << 9) | (move.to << 3) | static_cast<int>(move.promotion);
+}
+
 int capture_score(const Board& board, const Move& move)
 {
     const Piece attacker = board.piece_at(move.from);
@@ -922,9 +927,14 @@ std::vector<Move> Search::ordered_moves(
         }
     }
 
+    // Ties are broken by the move itself so the order does not depend on the
+    // order in which moves were generated.
     auto sort_stage = [](std::vector<ScoredMove>& stage) {
-        std::stable_sort(stage.begin(), stage.end(), [](const ScoredMove& left, const ScoredMove& right) {
-            return left.score > right.score;
+        std::sort(stage.begin(), stage.end(), [](const ScoredMove& left, const ScoredMove& right) {
+            if (left.score != right.score) {
+                return left.score > right.score;
+            }
+            return move_key(left.move) < move_key(right.move);
         });
     };
     auto append_stage = [&moves](std::size_t& index, const std::vector<ScoredMove>& stage) {
