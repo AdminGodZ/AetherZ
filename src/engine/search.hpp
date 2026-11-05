@@ -63,12 +63,15 @@ enum class Bound : std::uint8_t {
     Upper,
 };
 
+inline constexpr int tt_no_eval = -32'768;
+
+// Decoded view of a transposition table entry.
 struct TranspositionEntry {
-    std::uint64_t key = 0;
     Move best_move;
     int score = 0;
-    int depth = -1;
-    std::uint8_t generation = 0;
+    // Raw static evaluation, or tt_no_eval when it was not computed.
+    int eval = tt_no_eval;
+    int depth = 0;
     Bound bound = Bound::Exact;
 };
 
@@ -82,14 +85,35 @@ public:
     [[nodiscard]] std::size_t size_mb() const;
     [[nodiscard]] int hashfull() const;
     [[nodiscard]] std::optional<TranspositionEntry> probe(std::uint64_t key) const;
-    void store(std::uint64_t key, int depth, int score, Bound bound, Move best_move);
+    void store(std::uint64_t key, int depth, int score, int eval, Bound bound, Move best_move);
 
 private:
-    static constexpr std::size_t cluster_size = 2;
+    // 12-byte entries, five to a cache line. Only the upper 32 key bits are
+    // stored; the cluster index comes from the full key.
+    struct PackedEntry {
+        std::uint32_t key = 0;
+        std::uint16_t move = 0;
+        std::int16_t score = 0;
+        std::int16_t eval = 0;
+        // Depth offset so that zero marks an empty entry.
+        std::uint8_t depth = 0;
+        // Generation in the upper six bits, bound in the lower two.
+        std::uint8_t generation_bound = 0;
+
+        [[nodiscard]] bool empty() const { return depth == 0; }
+        [[nodiscard]] std::uint8_t generation() const { return generation_bound >> 2; }
+    };
+
+    static constexpr std::size_t cluster_size = 5;
+    static constexpr int depth_offset = 2;
 
     struct alignas(64) Cluster {
-        std::array<TranspositionEntry, cluster_size> entries{};
+        std::array<PackedEntry, cluster_size> entries{};
     };
+
+    [[nodiscard]] static std::uint32_t verification_key(std::uint64_t key) { return static_cast<std::uint32_t>(key >> 32); }
+    [[nodiscard]] Cluster& cluster_for(std::uint64_t key);
+    [[nodiscard]] const Cluster& cluster_for(std::uint64_t key) const;
 
     std::vector<Cluster> clusters_;
     std::uint8_t generation_ = 1;
@@ -178,6 +202,7 @@ private:
     [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth);
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] int raw_evaluate(const Board& board) const;
+    [[nodiscard]] int corrected_eval(const Board& board, int raw_eval) const;
     [[nodiscard]] int correction(const Board& board) const;
     [[nodiscard]] static std::size_t correction_index(const Board& board);
     [[nodiscard]] int& correction_entry(const Board& board);

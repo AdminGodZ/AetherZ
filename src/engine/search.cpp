@@ -169,10 +169,7 @@ void TranspositionTable::clear()
 
 void TranspositionTable::new_search()
 {
-    ++generation_;
-    if (generation_ == 0) {
-        generation_ = 1;
-    }
+    generation_ = static_cast<std::uint8_t>((generation_ + 1) & 0x3f);
 }
 
 std::size_t TranspositionTable::size_mb() const
@@ -185,11 +182,21 @@ int TranspositionTable::hashfull() const
     const std::size_t sample = std::min<std::size_t>(clusters_.size(), 1000 / cluster_size);
     int used = 0;
     for (std::size_t index = 0; index < sample; ++index) {
-        for (const TranspositionEntry& entry : clusters_[index].entries) {
-            used += entry.depth >= 0 && entry.generation == generation_ ? 1 : 0;
+        for (const PackedEntry& entry : clusters_[index].entries) {
+            used += !entry.empty() && entry.generation() == generation_ ? 1 : 0;
         }
     }
     return sample == 0 ? 0 : static_cast<int>(used * 1000 / (sample * cluster_size));
+}
+
+TranspositionTable::Cluster& TranspositionTable::cluster_for(std::uint64_t key)
+{
+    return clusters_[key % clusters_.size()];
+}
+
+const TranspositionTable::Cluster& TranspositionTable::cluster_for(std::uint64_t key) const
+{
+    return clusters_[key % clusters_.size()];
 }
 
 std::optional<TranspositionEntry> TranspositionTable::probe(std::uint64_t key) const
@@ -198,36 +205,51 @@ std::optional<TranspositionEntry> TranspositionTable::probe(std::uint64_t key) c
         return std::nullopt;
     }
 
-    const Cluster& cluster = clusters_[key % clusters_.size()];
-    for (const TranspositionEntry& entry : cluster.entries) {
-        if (entry.depth >= 0 && entry.key == key) {
-            return entry;
+    const std::uint32_t verification = verification_key(key);
+    for (const PackedEntry& entry : cluster_for(key).entries) {
+        if (entry.empty() || entry.key != verification) {
+            continue;
         }
+
+        Move move;
+        if (entry.move != 0) {
+            move.from = entry.move & 0x3f;
+            move.to = (entry.move >> 6) & 0x3f;
+            move.promotion = static_cast<PieceType>((entry.move >> 12) & 0x7);
+        }
+        return TranspositionEntry{
+            .best_move = move,
+            .score = entry.score,
+            .eval = entry.eval,
+            .depth = entry.depth - depth_offset,
+            .bound = static_cast<Bound>(entry.generation_bound & 0x3),
+        };
     }
 
     return std::nullopt;
 }
 
-void TranspositionTable::store(std::uint64_t key, int depth, int score, Bound bound, Move best_move)
+void TranspositionTable::store(std::uint64_t key, int depth, int score, int eval, Bound bound, Move best_move)
 {
     if (clusters_.empty()) {
         return;
     }
 
-    Cluster& cluster = clusters_[key % clusters_.size()];
-    auto replacement_value = [this](const TranspositionEntry& entry) {
-        if (entry.depth < 0) {
+    const std::uint32_t verification = verification_key(key);
+    auto replacement_value = [this](const PackedEntry& entry) {
+        if (entry.empty()) {
             return std::numeric_limits<int>::min();
         }
 
-        const int age = static_cast<std::uint8_t>(generation_ - entry.generation);
-        const int exact_bonus = entry.bound == Bound::Exact ? 3 : 0;
-        return entry.depth * 4 + exact_bonus - age * 2;
+        const int age = (generation_ - entry.generation()) & 0x3f;
+        const int exact_bonus = (entry.generation_bound & 0x3) == static_cast<int>(Bound::Exact) ? 3 : 0;
+        return entry.depth * 4 + exact_bonus - age * 8;
     };
 
-    TranspositionEntry* target = &cluster.entries[0];
-    for (TranspositionEntry& entry : cluster.entries) {
-        if (entry.key == key && entry.depth >= 0) {
+    Cluster& cluster = cluster_for(key);
+    PackedEntry* target = &cluster.entries[0];
+    for (PackedEntry& entry : cluster.entries) {
+        if (!entry.empty() && entry.key == verification) {
             target = &entry;
             break;
         }
@@ -236,17 +258,29 @@ void TranspositionTable::store(std::uint64_t key, int depth, int score, Bound bo
         }
     }
 
-    if (target->depth >= 0 && target->key == key && target->depth > depth && target->bound == Bound::Exact) {
+    const int stored_depth = std::clamp(depth + depth_offset, 1, 255);
+    const bool same_position = !target->empty() && target->key == verification;
+    // Keep a clearly deeper result for the same position unless the new one
+    // is exact (shallow quiescence results must not erase main-search work).
+    if (same_position && bound != Bound::Exact && target->depth > stored_depth + 3) {
         return;
     }
 
-    *target = TranspositionEntry{
-        .key = key,
-        .best_move = best_move,
-        .score = score,
-        .depth = depth,
-        .generation = generation_,
-        .bound = bound,
+    std::uint16_t move = 0;
+    if (best_move.is_valid()) {
+        move = static_cast<std::uint16_t>(
+            best_move.from | (best_move.to << 6) | (static_cast<int>(best_move.promotion) << 12));
+    } else if (same_position) {
+        move = target->move;
+    }
+
+    *target = PackedEntry{
+        .key = verification,
+        .move = move,
+        .score = static_cast<std::int16_t>(score),
+        .eval = static_cast<std::int16_t>(eval),
+        .depth = static_cast<std::uint8_t>(stored_depth),
+        .generation_bound = static_cast<std::uint8_t>((generation_ << 2) | static_cast<int>(bound)),
     };
 }
 
@@ -531,7 +565,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
             bound = Bound::Lower;
         }
 
-        table_.store(board.hash(), depth, score_to_table(result.score, 0), bound, *result.best_move);
+        table_.store(board.hash(), depth, score_to_table(result.score, 0), tt_no_eval, bound, *result.best_move);
         if (bound == Bound::Exact && !in_check) {
             update_correction_history(board, depth, result.score);
         }
@@ -604,15 +638,33 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     const int original_beta = beta;
     const bool in_check = board.in_check(board.side_to_move());
     std::optional<int> static_eval;
+    int raw_eval = tt_no_eval;
+    std::optional<TranspositionEntry> tt_entry = table_.probe(board.hash());
     const auto current_static_eval = [&]() {
         if (!static_eval) {
-            static_eval = evaluate(board);
+            if (in_check) {
+                static_eval = evaluate(board);
+            } else {
+                raw_eval = tt_entry && tt_entry->eval != tt_no_eval ? tt_entry->eval : raw_evaluate(board);
+                int eval = corrected_eval(board, raw_eval);
+                // A stored search score is a better estimate when its bound
+                // points the right way.
+                if (tt_entry && std::abs(tt_entry->score) < mate_bound) {
+                    const int tt_score = tt_entry->score;
+                    if ((tt_entry->bound == Bound::Lower && tt_score > eval)
+                        || (tt_entry->bound == Bound::Upper && tt_score < eval)
+                        || tt_entry->bound == Bound::Exact) {
+                        eval = tt_score;
+                    }
+                }
+                static_eval = eval;
+            }
         }
         return *static_eval;
     };
 
     std::optional<Move> tt_move;
-    if (const auto entry = table_.probe(board.hash())) {
+    if (const auto& entry = tt_entry) {
         tt_move = entry->best_move;
         if (entry->depth >= depth) {
             ++tt_hits_;
@@ -798,7 +850,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             bound = Bound::Lower;
         }
 
-        table_.store(board.hash(), depth, score_to_table(best, ply), bound, best_move);
+        table_.store(board.hash(), depth, score_to_table(best, ply), raw_eval, bound, best_move);
         if (bound == Bound::Exact && !in_check) {
             update_correction_history(board, depth, best);
         }
@@ -821,16 +873,31 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         return evaluate(board);
     }
 
+    const auto tt_entry = table_.probe(board.hash());
+    if (tt_entry) {
+        const int tt_score = score_from_table(tt_entry->score, ply);
+        if (tt_entry->bound == Bound::Exact
+            || (tt_entry->bound == Bound::Lower && tt_score >= beta)
+            || (tt_entry->bound == Bound::Upper && tt_score <= alpha)) {
+            ++tt_hits_;
+            return tt_score;
+        }
+    }
+
+    const int original_alpha = alpha;
     const bool in_check = board.in_check(board.side_to_move());
     int best = -infinity;
+    int raw_eval = tt_no_eval;
     if (!in_check) {
-        const int stand_pat = evaluate(board);
+        raw_eval = tt_entry && tt_entry->eval != tt_no_eval ? tt_entry->eval : raw_evaluate(board);
+        const int stand_pat = corrected_eval(board, raw_eval);
         if (stand_pat >= beta) {
             return stand_pat;
         }
         best = stand_pat;
         alpha = std::max(alpha, stand_pat);
     }
+    Move best_move;
 
     bool searched_move = false;
     const bool include_quiet_checks = !in_check && quiet_check_depth > 0;
@@ -865,10 +932,13 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         pop_position();
         board.unmake_move(undo);
 
-        if (score >= beta) {
-            return score;
+        if (score > best) {
+            best = score;
+            best_move = move;
         }
-        best = std::max(best, score);
+        if (score >= beta) {
+            break;
+        }
         alpha = std::max(alpha, score);
     }
 
@@ -876,12 +946,21 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         return -mate_score + ply;
     }
 
+    if (!stop_) {
+        const Bound bound = best >= beta ? Bound::Lower : (best > original_alpha ? Bound::Exact : Bound::Upper);
+        table_.store(board.hash(), 0, score_to_table(best, ply), raw_eval, bound, best_move);
+    }
     return best;
 }
 
 int Search::evaluate(const Board& board) const
 {
-    return std::clamp(raw_evaluate(board) + correction(board), -mate_score + 1000, mate_score - 1000);
+    return corrected_eval(board, raw_evaluate(board));
+}
+
+int Search::corrected_eval(const Board& board, int raw_eval) const
+{
+    return std::clamp(raw_eval + correction(board), -mate_score + 1000, mate_score - 1000);
 }
 
 int Search::raw_evaluate(const Board& board) const
