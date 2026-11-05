@@ -1,6 +1,7 @@
 #include "engine/benchmark.hpp"
 #include "engine/attacks.hpp"
 #include "engine/board.hpp"
+#include "engine/datagen.hpp"
 #include "engine/epd.hpp"
 #include "engine/evaluate.hpp"
 #include "engine/nnue/nnue.hpp"
@@ -22,6 +23,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <string_view>
 
 namespace {
@@ -888,24 +890,82 @@ void test_uci_accepts_nnue_options()
     require(text.find("readyok") != std::string::npos, "UCI remains ready after NNUE load");
 }
 
-void test_training_data_command_writes_bullet_text()
+std::vector<std::string> read_lines(const std::string& path)
 {
-    const std::string path = temp_path("aetherz_train_sample.txt");
+    std::ifstream input{path};
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(input, line)) {
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+aetherz::DatagenStats run_datagen(const std::string& path, std::uint64_t games, int threads)
+{
+    std::filesystem::remove(path);
+    aetherz::DatagenConfig config;
+    config.output_path = path;
+    config.games = games;
+    config.threads = threads;
+    config.nodes = 400;
+    config.hash_mb = 1;
+    return aetherz::generate_training_data(config, nullptr);
+}
+
+void test_datagen_writes_valid_bullet_text()
+{
+    const std::string path = temp_path("aetherz_datagen_sample.txt");
+    const auto stats = run_datagen(path, 3, 1);
+    const auto lines = read_lines(path);
+
+    require(stats.games == 3, "datagen plays the requested games");
+    require(stats.white_wins + stats.black_wins + stats.draws == 3, "datagen counts every result");
+    require(stats.positions > 0 && lines.size() == stats.positions, "datagen writes one line per position");
+
+    for (const std::string& line : lines) {
+        const auto first = line.find(" | ");
+        const auto second = line.find(" | ", first + 3);
+        require(first != std::string::npos && second != std::string::npos, "datagen line has three fields");
+
+        const auto board = aetherz::Board::from_fen(line.substr(0, first));
+        require(board.has_value(), "datagen FEN parses");
+        require(!board->in_check(board->side_to_move()), "datagen skips positions in check");
+
+        const int score = std::stoi(line.substr(first + 3, second - first - 3));
+        require(std::abs(score) < aetherz::mate_bound, "datagen skips mate scores");
+
+        const std::string result = line.substr(second + 3);
+        require(result == "1.0" || result == "0.5" || result == "0.0", "datagen writes a white-relative result");
+    }
+}
+
+void test_datagen_is_independent_of_thread_count()
+{
+    const std::string single = temp_path("aetherz_datagen_single.txt");
+    const std::string threaded = temp_path("aetherz_datagen_threaded.txt");
+    (void)run_datagen(single, 4, 1);
+    (void)run_datagen(threaded, 4, 3);
+
+    auto single_lines = read_lines(single);
+    auto threaded_lines = read_lines(threaded);
+    std::sort(single_lines.begin(), single_lines.end());
+    std::sort(threaded_lines.begin(), threaded_lines.end());
+    require(!single_lines.empty() && single_lines == threaded_lines, "datagen output does not depend on thread count");
+}
+
+void test_datagen_command_rejects_bad_options()
+{
     std::ostringstream output;
     std::ostringstream error;
-
-    const int status = aetherz::run_training_data_command({"traindata", path, "4", "1", "8"}, output, error);
-    require(status == 0, "training data command succeeds");
-    require(error.str().empty(), "training data command has no errors");
-
-    std::ifstream input{path};
-    std::string line;
-    int lines = 0;
-    while (std::getline(input, line)) {
-        require(line.find(" | ") != std::string::npos, "training data line uses Bullet text separators");
-        ++lines;
-    }
-    require(lines == 4, "training data command writes requested positions");
+    require(aetherz::run_datagen_command({"datagen"}, output, error) == 1, "datagen requires an output file");
+    require(
+        aetherz::run_datagen_command({"datagen", temp_path("unused.txt"), "--nodes", "many"}, output, error) == 1,
+        "datagen rejects non-numeric values");
+    require(
+        aetherz::run_datagen_command({"datagen", temp_path("unused.txt"), "--bogus", "1"}, output, error) == 1,
+        "datagen rejects unknown options");
+    require(error.str().find("usage: aetherz datagen") != std::string::npos, "datagen prints usage");
 }
 
 void test_search_benchmark_command_reports_summary()
@@ -1036,7 +1096,9 @@ int main()
     test_uci_ponder_waits_for_ponderhit();
     test_uci_movetime_uses_the_full_time();
     test_time_plan_stays_within_clock();
-    test_training_data_command_writes_bullet_text();
+    test_datagen_writes_valid_bullet_text();
+    test_datagen_is_independent_of_thread_count();
+    test_datagen_command_rejects_bad_options();
     test_search_benchmark_command_reports_summary();
     test_bench_command_is_deterministic();
     test_selfplay_command_reports_summary();

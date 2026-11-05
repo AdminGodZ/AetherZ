@@ -1,4 +1,5 @@
 #include "engine/benchmark.hpp"
+#include "engine/datagen.hpp"
 #include "engine/uci.hpp"
 
 #include <iostream>
@@ -73,8 +74,8 @@ int main(int argc, char** argv)
             std::cerr);
     }
 
-    if (args.size() > 1 && args[1] == "traindata") {
-        return aetherz::run_training_data_command(
+    if (args.size() > 1 && args[1] == "datagen") {
+        return aetherz::run_datagen_command(
             std::vector<std::string>{args.begin() + 1, args.end()},
             std::cout,
             std::cerr);

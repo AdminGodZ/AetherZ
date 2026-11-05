@@ -13,6 +13,5 @@ int run_tactics_command(const std::vector<std::string>& args, std::ostream& outp
 int run_selfplay_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error);
 int run_epd_test_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error);
 int run_arasan_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error);
-int run_training_data_command(const std::vector<std::string>& args, std::ostream& output, std::ostream& error);
 
 } // namespace aetherz
