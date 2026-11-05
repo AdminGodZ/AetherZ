@@ -164,7 +164,8 @@ private:
     std::array<std::array<Move, 2>, max_ply> killer_moves_{};
     std::array<std::array<int, 64>, 64> history_{};
     std::array<std::array<std::array<int, 64>, 64>, 64> continuation_history_{};
-    std::array<int, correction_history_size> correction_history_{};
+    // Static evaluation corrections keyed by pawn structure and side to move.
+    std::array<std::array<int, correction_history_size>, 2> correction_history_{};
     std::vector<std::uint64_t> position_history_;
     nnue::NnueEvaluator nnue_;
     bool use_nnue_ = true;
@@ -176,6 +177,9 @@ private:
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] int raw_evaluate(const Board& board) const;
     [[nodiscard]] int correction(const Board& board) const;
+    [[nodiscard]] static std::size_t correction_index(const Board& board);
+    [[nodiscard]] int& correction_entry(const Board& board);
+    [[nodiscard]] int correction_entry(const Board& board) const;
     [[nodiscard]] MovePicker ordered_moves(
         const Board& board,
         std::optional<Move> tt_move,
@@ -227,7 +231,7 @@ private:
     void pop_nnue();
     [[nodiscard]] bool can_use_nnue() const;
     void clear_killers();
-    void record_cutoff(const Move& move, int depth, int ply, Move previous_move);
+    void record_cutoff(const Move& move, int depth, int ply, Move previous_move, const MoveList& quiets_tried);
     void update_correction_history(const Board& board, int depth, int search_score);
 };
 
