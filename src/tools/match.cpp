@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <poll.h>
@@ -526,45 +527,66 @@ std::vector<std::string> load_openings(const std::string& path)
 }
 
 // Random openings: a few random legal moves from the start position, kept
-// only if a short search considers the result roughly balanced.
-std::vector<std::string> generate_openings(int count, int plies, std::uint64_t seed)
+// only if a short search considers the result roughly balanced. Work is
+// split over threads, each with its own seed and a fixed share of the
+// openings, so the result does not depend on timing.
+std::vector<std::string> generate_openings(int count, int plies, std::uint64_t seed, int threads)
 {
     constexpr int max_balance_cp = 120;
     constexpr int check_depth = 6;
 
+    threads = std::clamp(threads, 1, std::max(1, count));
+    std::vector<std::vector<std::string>> shares(static_cast<std::size_t>(threads));
+    std::vector<std::thread> workers;
+    for (int thread = 0; thread < threads; ++thread) {
+        const int share = count / threads + (thread < count % threads ? 1 : 0);
+        workers.emplace_back([&, thread, share] {
+            std::vector<std::string>& openings = shares[static_cast<std::size_t>(thread)];
+            std::mt19937_64 rng{seed + 0x9E3779B97F4A7C15ULL * static_cast<std::uint64_t>(thread)};
+            // On the heap: a Search is larger than a secondary thread's stack.
+            auto search_owner = std::make_unique<aetherz::Search>();
+            aetherz::Search& search = *search_owner;
+            search.set_hash_size_mb(1);
+
+            while (static_cast<int>(openings.size()) < share) {
+                Board board = Board::startpos();
+                bool ok = true;
+                for (int ply = 0; ply < plies; ++ply) {
+                    const auto moves = board.generate_legal_moves();
+                    if (moves.empty()) {
+                        ok = false;
+                        break;
+                    }
+                    std::uniform_int_distribution<std::size_t> pick{0, moves.size() - 1};
+                    Board::UndoState undo;
+                    if (!board.make_move(moves[pick(rng)], undo)) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (!ok || board.generate_legal_moves().empty()) {
+                    continue;
+                }
+
+                aetherz::SearchLimits limits;
+                limits.max_depth = check_depth;
+                limits.position_history = {board.hash()};
+                Board search_board = board;
+                search.clear_hash();
+                const auto result = search.find_best_move(search_board, limits);
+                if (std::abs(result.score) <= max_balance_cp) {
+                    openings.push_back(board.to_fen());
+                }
+            }
+        });
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+
     std::vector<std::string> openings;
-    std::mt19937_64 rng{seed};
-    aetherz::Search search;
-
-    while (static_cast<int>(openings.size()) < count) {
-        Board board = Board::startpos();
-        bool ok = true;
-        for (int ply = 0; ply < plies; ++ply) {
-            const auto moves = board.generate_legal_moves();
-            if (moves.empty()) {
-                ok = false;
-                break;
-            }
-            std::uniform_int_distribution<std::size_t> pick{0, moves.size() - 1};
-            Board::UndoState undo;
-            if (!board.make_move(moves[pick(rng)], undo)) {
-                ok = false;
-                break;
-            }
-        }
-        if (!ok || board.generate_legal_moves().empty()) {
-            continue;
-        }
-
-        aetherz::SearchLimits limits;
-        limits.max_depth = check_depth;
-        limits.position_history = {board.hash()};
-        Board search_board = board;
-        search.clear_hash();
-        const auto result = search.find_best_move(search_board, limits);
-        if (std::abs(result.score) <= max_balance_cp) {
-            openings.push_back(board.to_fen());
-        }
+    for (const auto& share : shares) {
+        openings.insert(openings.end(), share.begin(), share.end());
     }
     return openings;
 }
@@ -813,7 +835,7 @@ int main(int argc, char** argv)
         }
     } else {
         std::cout << "generating " << config.pairs << " random openings..." << std::endl;
-        openings = generate_openings(config.pairs, config.random_opening_plies, config.seed);
+        openings = generate_openings(config.pairs, config.random_opening_plies, config.seed, config.concurrency);
         if (config.save_openings_file) {
             std::ofstream saved{*config.save_openings_file};
             for (const std::string& opening : openings) {
