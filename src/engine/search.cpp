@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <limits>
 #include <sstream>
+#include <thread>
 
 namespace aetherz {
 namespace {
@@ -285,8 +286,45 @@ void TranspositionTable::store(std::uint64_t key, int depth, int score, int eval
 }
 
 Search::Search()
-    : table_(32)
+    : table_(std::make_shared<TranspositionTable>(32))
 {
+}
+
+Search::Search(std::shared_ptr<TranspositionTable> table)
+    : table_(std::move(table))
+    , helper_(true)
+{
+}
+
+Search::~Search() = default;
+
+void Search::set_threads(int threads)
+{
+    const auto helper_count = static_cast<std::size_t>(std::max(1, threads) - 1);
+    while (helpers_.size() > helper_count) {
+        helpers_.pop_back();
+    }
+    while (helpers_.size() < helper_count) {
+        auto helper = std::unique_ptr<Search>(new Search(table_));
+        helper->shared_stop_ = &helpers_stop_;
+        helper->nnue_ = nnue_;
+        helper->use_nnue_ = use_nnue_;
+        helpers_.push_back(std::move(helper));
+    }
+}
+
+int Search::threads() const
+{
+    return static_cast<int>(helpers_.size()) + 1;
+}
+
+std::uint64_t Search::total_nodes() const
+{
+    std::uint64_t total = node_count();
+    for (const auto& helper : helpers_) {
+        total += helper->node_count();
+    }
+    return total;
 }
 
 SearchResult Search::find_best_move(Board& board, int depth)
@@ -298,17 +336,30 @@ SearchResult Search::find_best_move(Board& board, int depth)
 
 SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
 {
-    nodes_ = 0;
+    nodes_.store(0, std::memory_order_relaxed);
     tt_hits_ = 0;
     stop_ = false;
     max_nodes_ = limits.max_nodes;
     set_time_limits(limits.soft_time, limits.move_time);
-    table_.new_search();
+    if (!helper_) {
+        table_->new_search();
+    }
     clear_killers();
     reset_position_history(board, limits);
     refresh_nnue(board);
     if (limits.on_search_started) {
         limits.on_search_started();
+    }
+
+    std::vector<std::thread> helper_threads;
+    helpers_stop_ = false;
+    for (const auto& helper : helpers_) {
+        helper_threads.emplace_back([helper = helper.get(), board, history = limits.position_history]() mutable {
+            SearchLimits helper_limits;
+            helper_limits.max_depth = max_search_depth;
+            helper_limits.position_history = std::move(history);
+            (void)helper->find_best_move(board, helper_limits);
+        });
     }
 
     SearchResult best_completed;
@@ -334,7 +385,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
         while (true) {
             iteration = search_depth(board, depth, alpha, beta);
             iteration.seldepth = std::max(seldepth_, depth);
-            iteration.nodes = nodes_;
+            iteration.nodes = total_nodes();
             iteration.tt_hits = tt_hits_;
 
             if (stop_ || depth == 1 || (iteration.score > alpha && iteration.score < beta)) {
@@ -387,7 +438,12 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
         }
     }
 
-    best_completed.nodes = nodes_;
+    helpers_stop_ = true;
+    for (std::thread& thread : helper_threads) {
+        thread.join();
+    }
+
+    best_completed.nodes = total_nodes();
     best_completed.tt_hits = tt_hits_;
     return best_completed;
 }
@@ -408,17 +464,17 @@ void Search::set_time_limits(
 
 void Search::set_hash_size_mb(std::size_t megabytes)
 {
-    table_.resize(megabytes);
+    table_->resize(megabytes);
 }
 
 void Search::clear_hash()
 {
-    table_.clear();
+    table_->clear();
 }
 
 void Search::clear()
 {
-    table_.clear();
+    table_->clear();
     clear_killers();
     for (auto& row : history_) {
         row.fill(0);
@@ -431,21 +487,27 @@ void Search::clear()
     for (auto& table : correction_history_) {
         table.fill(0);
     }
+    for (const auto& helper : helpers_) {
+        helper->clear();
+    }
 }
 
 int Search::hashfull() const
 {
-    return table_.hashfull();
+    return table_->hashfull();
 }
 
 std::size_t Search::hash_size_mb() const
 {
-    return table_.size_mb();
+    return table_->size_mb();
 }
 
 void Search::set_use_nnue(bool enabled)
 {
     use_nnue_ = enabled;
+    for (const auto& helper : helpers_) {
+        helper->use_nnue_ = enabled;
+    }
 }
 
 bool Search::use_nnue() const
@@ -455,12 +517,19 @@ bool Search::use_nnue() const
 
 bool Search::load_nnue(std::string_view path, std::string* error)
 {
-    return nnue_.load(path, error);
+    const bool loaded = nnue_.load(path, error);
+    for (const auto& helper : helpers_) {
+        helper->nnue_ = nnue_;
+    }
+    return loaded;
 }
 
 void Search::clear_nnue()
 {
     nnue_.clear();
+    for (const auto& helper : helpers_) {
+        helper->nnue_.clear();
+    }
 }
 
 bool Search::nnue_loaded() const
@@ -485,14 +554,14 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
     const bool in_check = board.in_check(board.side_to_move());
     static_evals_[0] = in_check ? no_eval : evaluate(board);
-    const auto entry = table_.probe(board.hash());
+    const auto entry = table_->probe(board.hash());
     MovePicker picker = ordered_moves(board, entry ? std::optional<Move>{entry->best_move} : std::nullopt, 0);
     MoveList moves;
     while (const auto move = picker.next()) {
         moves.push_back(*move);
     }
     if (moves.empty()) {
-        result.nodes = nodes_;
+        result.nodes = total_nodes();
         result.tt_hits = tt_hits_;
         result.score = in_check ? -mate_score : 0;
         return result;
@@ -510,7 +579,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
             break;
         }
         result.score = 0;
-        result.nodes = nodes_;
+        result.nodes = total_nodes();
         result.tt_hits = tt_hits_;
         return result;
     }
@@ -566,12 +635,12 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
     if (!searched_move) {
         result.score = in_check ? -mate_score : 0;
-        result.nodes = nodes_;
+        result.nodes = total_nodes();
         result.tt_hits = tt_hits_;
         return result;
     }
 
-    result.nodes = nodes_;
+    result.nodes = total_nodes();
     result.tt_hits = tt_hits_;
     if (result.best_move) {
         Bound bound = Bound::Exact;
@@ -581,7 +650,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
             bound = Bound::Lower;
         }
 
-        table_.store(board.hash(), depth, score_to_table(result.score, 0), tt_no_eval, bound, *result.best_move);
+        table_->store(board.hash(), depth, score_to_table(result.score, 0), tt_no_eval, bound, *result.best_move);
         if (bound == Bound::Exact && !in_check) {
             update_correction_history(board, depth, result.score);
         }
@@ -596,7 +665,7 @@ std::vector<Move> Search::principal_variation(Board board, int depth) const
     line.reserve(static_cast<std::size_t>(std::max(0, depth)));
 
     for (int remaining = depth; remaining > 0; --remaining) {
-        const auto entry = table_.probe(board.hash());
+        const auto entry = table_->probe(board.hash());
         if (!entry || !entry->best_move.is_valid()) {
             break;
         }
@@ -628,7 +697,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
 {
     // A singular-extension verification search of this node without one move.
     const bool singular_search = excluded_move.is_valid();
-    ++nodes_;
+    count_node();
     seldepth_ = std::max(seldepth_, ply);
     if (should_stop()) {
         return 0;
@@ -657,7 +726,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     const bool in_check = board.in_check(board.side_to_move());
     std::optional<int> static_eval;
     int raw_eval = tt_no_eval;
-    std::optional<TranspositionEntry> tt_entry = table_.probe(board.hash());
+    std::optional<TranspositionEntry> tt_entry = table_->probe(board.hash());
     const auto current_static_eval = [&]() {
         if (!static_eval) {
             if (in_check) {
@@ -907,7 +976,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             bound = Bound::Lower;
         }
 
-        table_.store(board.hash(), depth, score_to_table(best, ply), raw_eval, bound, best_move);
+        table_->store(board.hash(), depth, score_to_table(best, ply), raw_eval, bound, best_move);
         if (bound == Bound::Exact && !in_check) {
             update_correction_history(board, depth, best);
         }
@@ -918,7 +987,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
 
 int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth)
 {
-    ++nodes_;
+    count_node();
     seldepth_ = std::max(seldepth_, ply);
     if (should_stop()) {
         return 0;
@@ -930,7 +999,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         return evaluate(board);
     }
 
-    const auto tt_entry = table_.probe(board.hash());
+    const auto tt_entry = table_->probe(board.hash());
     if (tt_entry) {
         const int tt_score = score_from_table(tt_entry->score, ply);
         if (tt_entry->bound == Bound::Exact
@@ -1005,7 +1074,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
 
     if (!stop_) {
         const Bound bound = best >= beta ? Bound::Lower : (best > original_alpha ? Bound::Exact : Bound::Upper);
-        table_.store(board.hash(), 0, score_to_table(best, ply), raw_eval, bound, best_move);
+        table_->store(board.hash(), 0, score_to_table(best, ply), raw_eval, bound, best_move);
     }
     return best;
 }
@@ -1153,12 +1222,17 @@ bool Search::should_stop(bool force_check)
         return true;
     }
 
-    if (max_nodes_ && nodes_ >= *max_nodes_) {
+    if (shared_stop_ != nullptr && shared_stop_->load(std::memory_order_relaxed)) {
         stop_ = true;
         return true;
     }
 
-    if (!force_check && (nodes_ & 2047ULL) != 0) {
+    if (max_nodes_ && node_count() >= *max_nodes_) {
+        stop_ = true;
+        return true;
+    }
+
+    if (!force_check && (node_count() & 2047ULL) != 0) {
         return false;
     }
 

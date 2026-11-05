@@ -311,6 +311,28 @@ void test_time_limited_search_returns_a_move()
     require(result.nodes > 0, "time-limited search visits nodes");
 }
 
+void test_multithreaded_search_finds_mate_and_stops()
+{
+    auto board = *aetherz::Board::from_fen("7k/8/5KQ1/8/8/8/8/8 w - - 0 1");
+    aetherz::Search search;
+    search.set_threads(4);
+    require(search.threads() == 4, "search uses the requested thread count");
+
+    aetherz::SearchLimits limits;
+    limits.max_depth = aetherz::max_search_depth;
+    limits.move_time = std::chrono::milliseconds{100};
+    const auto start = std::chrono::steady_clock::now();
+    const auto result = search.find_best_move(board, limits);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    require(result.best_move.has_value(), "multithreaded search returns a move");
+    require(aetherz::move_to_uci(*result.best_move) == "g6g7", "multithreaded search finds mate in one");
+    require(elapsed < std::chrono::seconds{2}, "multithreaded search stops its helpers");
+
+    search.set_threads(1);
+    require(search.threads() == 1, "search can return to a single thread");
+}
+
 void test_repeated_search_uses_transposition_table()
 {
     auto board = aetherz::Board::startpos();
@@ -917,6 +939,7 @@ int main()
     test_iterative_search_returns_a_move();
     test_time_limited_search_returns_a_move();
     test_repeated_search_uses_transposition_table();
+    test_multithreaded_search_finds_mate_and_stops();
     test_evaluation_trace_rebuilds_evaluation();
     test_evaluation_is_balanced_at_start();
     test_evaluation_rewards_material();

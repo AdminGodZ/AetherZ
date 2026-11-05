@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -144,6 +145,9 @@ private:
 class Search {
 public:
     Search();
+    ~Search();
+    Search(const Search&) = delete;
+    Search& operator=(const Search&) = delete;
 
     [[nodiscard]] SearchResult find_best_move(Board& board, int depth);
     [[nodiscard]] SearchResult find_best_move(Board& board, const SearchLimits& limits);
@@ -152,6 +156,11 @@ public:
     void set_time_limits(
         std::optional<std::chrono::milliseconds> soft_time,
         std::optional<std::chrono::milliseconds> hard_time);
+
+    // Lazy SMP: helper threads search the same position and share the hash
+    // table; only the main thread reports results.
+    void set_threads(int threads);
+    [[nodiscard]] int threads() const;
 
     void set_hash_size_mb(std::size_t megabytes);
     void clear_hash();
@@ -176,8 +185,17 @@ private:
     static constexpr int max_ply = max_search_ply;
     static constexpr std::size_t correction_history_size = 16'384;
 
-    TranspositionTable table_;
-    std::uint64_t nodes_ = 0;
+    explicit Search(std::shared_ptr<TranspositionTable> table);
+
+    std::shared_ptr<TranspositionTable> table_;
+    std::vector<std::unique_ptr<Search>> helpers_;
+    // Set for helper searches: they share the main search's table and stop
+    // when the main search tells them to.
+    bool helper_ = false;
+    std::atomic<bool> helpers_stop_ = false;
+    const std::atomic<bool>* shared_stop_ = nullptr;
+    // Written only by the owning thread; atomic so other threads can read it.
+    std::atomic<std::uint64_t> nodes_ = 0;
     std::uint64_t tt_hits_ = 0;
     int seldepth_ = 0;
     std::atomic<bool> stop_ = false;
@@ -197,6 +215,9 @@ private:
     nnue::NnueEvaluator nnue_;
     bool use_nnue_ = true;
 
+    void count_node() { nodes_.store(nodes_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t node_count() const { return nodes_.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t total_nodes() const;
     [[nodiscard]] SearchResult search_depth(Board& board, int depth, int alpha, int beta);
     [[nodiscard]] std::vector<Move> principal_variation(Board board, int depth) const;
     [[nodiscard]] int negamax(

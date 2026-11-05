@@ -179,7 +179,7 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
                 "id name AetherZ\n"
                 "id author admingod\n"
                 "option name Hash type spin default 32 min 1 max 65536\n"
-                "option name Threads type spin default 1 min 1 max 1\n"
+                "option name Threads type spin default 1 min 1 max 256\n"
                 "option name Move Overhead type spin default 30 min 0 max 5000\n"
                 "option name Ponder type check default false\n"
                 "option name Clear Hash type button\n"
@@ -315,6 +315,11 @@ void UciEngine::handle_setoption(const std::vector<std::string>& tokens)
         try {
             const int megabytes = std::clamp(std::stoi(value), 1, 65536);
             search_.set_hash_size_mb(static_cast<std::size_t>(megabytes));
+        } catch (...) {
+        }
+    } else if (name == "Threads" && !value.empty()) {
+        try {
+            search_.set_threads(std::clamp(std::stoi(value), 1, 256));
         } catch (...) {
         }
     } else if (name == "Move Overhead" && !value.empty()) {
