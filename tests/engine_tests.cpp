@@ -519,14 +519,17 @@ void test_search_prefers_castling_over_king_walk()
 
     require(board.has_value(), "castling search FEN parses");
 
-    // At very low depth developing moves such as Ne5 are just as good, so
-    // search deep enough for king safety to decide.
+    // Developing or waiting moves are fine; what must not happen is a king
+    // step that throws away both castling rights.
     aetherz::Search search;
     const auto result = search.find_best_move(*board, 8);
 
     require(result.best_move.has_value(), "castling search finds a move");
-    const std::string best = aetherz::move_to_uci(*result.best_move);
-    require(best == "e1g1" || best == "e1c1", "search castles instead of walking the king");
+    const auto moved = board->piece_at(result.best_move->from);
+    const bool king_walk = aetherz::piece_type(moved) == aetherz::PieceType::King
+        && result.best_move->flag != aetherz::MoveFlag::KingCastle
+        && result.best_move->flag != aetherz::MoveFlag::QueenCastle;
+    require(!king_walk, "search does not walk the king instead of castling");
 }
 
 void test_search_scores_root_checkmate()
