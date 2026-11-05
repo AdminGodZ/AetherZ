@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -25,6 +26,7 @@
 #include <string>
 #include <vector>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -650,114 +652,408 @@ void test_uci_go_time_controls()
     require(text.find("bestmove ") != std::string::npos, "UCI time-control search returns bestmove");
 }
 
-void test_nnue_placeholder_loads_and_falls_back_to_classical_eval()
+std::uint64_t next_random(std::uint64_t& state)
 {
-    const std::string path = temp_path("aetherz_dummy.nnue");
-    {
-        std::ofstream output{path};
-        output << "AETHERZ_NNUE_V1\n";
-        output << "name=test-placeholder\n";
-        output << "feature_set=halfka-v1\n";
-        output << "accumulator_size=768\n";
-        output << "hidden_size=32\n";
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    return state >> 33;
+}
+
+// Writes a network in Bullet's quantised layout: little-endian int16 values
+// followed by `padding` bytes, which Bullet fills with "bullet".
+void write_network(const std::string& path, const std::vector<std::int16_t>& values, std::size_t padding = 0)
+{
+    require(values.size() == aetherz::nnue::network_value_count, "test network has the expected number of values");
+    std::ofstream output{path, std::ios::binary};
+    for (const std::int16_t value : values) {
+        const auto bits = static_cast<std::uint16_t>(value);
+        output.put(static_cast<char>(bits & 0xFF));
+        output.put(static_cast<char>(bits >> 8));
     }
+    constexpr std::string_view pattern = "bullet";
+    for (std::size_t index = 0; index < padding; ++index) {
+        output.put(pattern[index % pattern.size()]);
+    }
+}
+
+// A deterministic pseudo-random network with weights in [-64, 63], about the
+// size of a trained network's.
+std::string write_random_network(std::string_view name, std::size_t padding = 0)
+{
+    std::vector<std::int16_t> values(aetherz::nnue::network_value_count);
+    std::uint64_t state = 0x5EED;
+    for (std::int16_t& value : values) {
+        value = static_cast<std::int16_t>(static_cast<int>(next_random(state) % 128) - 64);
+    }
+
+    const std::string path = temp_path(name);
+    write_network(path, values, padding);
+    return path;
+}
+
+constexpr std::size_t feature_weight_offset(int feature, int neuron)
+{
+    return static_cast<std::size_t>(feature) * aetherz::nnue::hidden_size + static_cast<std::size_t>(neuron);
+}
+
+constexpr std::size_t feature_bias_offset(int neuron)
+{
+    return feature_weight_offset(aetherz::nnue::input_size, neuron);
+}
+
+constexpr std::size_t output_weight_offset(int index)
+{
+    return feature_bias_offset(aetherz::nnue::hidden_size) + static_cast<std::size_t>(index);
+}
+
+constexpr std::size_t output_bias_offset()
+{
+    return output_weight_offset(2 * aetherz::nnue::hidden_size);
+}
+
+// The same position with colours swapped and the board flipped vertically.
+std::string mirror_fen(std::string_view fen)
+{
+    std::istringstream stream{std::string{fen}};
+    std::string placement;
+    std::string side;
+    std::string castling;
+    std::string en_passant;
+    std::string halfmove;
+    std::string fullmove;
+    stream >> placement >> side >> castling >> en_passant >> halfmove >> fullmove;
+
+    const auto swap_case = [](char value) {
+        const auto letter = static_cast<unsigned char>(value);
+        return static_cast<char>(std::isupper(letter) ? std::tolower(letter) : std::toupper(letter));
+    };
+
+    std::vector<std::string> ranks;
+    std::istringstream rank_stream{placement};
+    for (std::string rank; std::getline(rank_stream, rank, '/');) {
+        std::ranges::transform(rank, rank.begin(), swap_case);
+        ranks.push_back(rank);
+    }
+    std::ranges::reverse(ranks);
+    std::string mirrored;
+    for (const std::string& rank : ranks) {
+        mirrored += (mirrored.empty() ? "" : "/") + rank;
+    }
+
+    std::string mirrored_castling;
+    for (const char right : std::string_view{"KQkq"}) {
+        if (castling.find(swap_case(right)) != std::string::npos) {
+            mirrored_castling += right;
+        }
+    }
+    if (mirrored_castling.empty()) {
+        mirrored_castling = "-";
+    }
+    if (en_passant != "-") {
+        en_passant[1] = en_passant[1] == '3' ? '6' : '3';
+    }
+
+    return mirrored + (side == "w" ? " b " : " w ") + mirrored_castling + " " + en_passant + " " + halfmove + " " + fullmove;
+}
+
+bool is_legal_move(const aetherz::Board& board, const aetherz::Move& move)
+{
+    return std::ranges::any_of(board.generate_legal_moves(), [&](const aetherz::Move& legal) {
+        return legal.from == move.from && legal.to == move.to && legal.promotion == move.promotion;
+    });
+}
+
+constexpr std::string_view kiwipete_fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+
+void test_nnue_loads_bullet_sized_files()
+{
+    const std::size_t size = aetherz::nnue::network_file_size;
+    require(size == 2 * (768 * 256 + 256 + 2 * 256 + 1), "network file size matches the architecture");
 
     aetherz::nnue::NnueEvaluator evaluator;
     std::string error;
-    require(evaluator.load(path, &error), "placeholder NNUE file loads");
-    require(error.empty(), "placeholder NNUE load has no error");
-    require(evaluator.loaded(), "placeholder NNUE reports loaded");
-    require(evaluator.metadata().name == "test-placeholder", "placeholder NNUE metadata loads");
+    const std::string exact = write_random_network("aetherz_random_exact.nnue");
+    require(evaluator.load(exact, &error), "network of the exact size loads");
+    require(evaluator.loaded() && evaluator.eval_file() == exact, "loaded network reports its file");
 
-    auto board = aetherz::Board::startpos();
+    const std::string padded = write_random_network("aetherz_random_padded.nnue", (64 - size % 64) % 64);
+    require(std::filesystem::file_size(padded) % 64 == 0, "padded test network is a multiple of 64 bytes");
+    require(evaluator.load(padded, &error), "network padded to 64 bytes like Bullet's loads");
+
+    const auto board = *aetherz::Board::from_fen(kiwipete_fen);
+    aetherz::nnue::NnueEvaluator exact_evaluator;
+    require(exact_evaluator.load(exact), "exact network reloads");
+    require(
+        evaluator.evaluate_from_scratch(board) == exact_evaluator.evaluate_from_scratch(board),
+        "padding does not change the network");
+
+    const std::string too_small = temp_path("aetherz_too_small.nnue");
+    {
+        std::ofstream output{too_small, std::ios::binary};
+        output << std::string(size - 2, '\0');
+    }
+    error.clear();
+    require(!evaluator.load(too_small, &error), "too small network file is rejected");
+    require(error.find("needs " + std::to_string(size) + " bytes") != std::string::npos, "too small network reports the needed size");
+    require(!evaluator.loaded() && evaluator.eval_file().empty(), "failed load leaves no network");
+    require(evaluator.evaluate(board) == aetherz::evaluate_side_to_move(board), "without a network the evaluator is classical");
+
+    const std::string too_large = write_random_network("aetherz_too_large.nnue", 64);
+    error.clear();
+    require(!evaluator.load(too_large, &error), "network file with more than 63 bytes of padding is rejected");
+    require(error.find("padding") != std::string::npos, "oversized network reports the padding limit");
+
+    error.clear();
+    require(!evaluator.load(temp_path("aetherz_missing_network.nnue"), &error), "missing network file is rejected");
+    require(error.find("could not open") != std::string::npos, "missing network reports open failure");
+}
+
+void test_nnue_matches_hand_computed_evaluation()
+{
+    using aetherz::nnue::hidden_size;
+    std::vector<std::int16_t> values(aetherz::nnue::network_value_count, 0);
+
+    // White's queen on d1: an own queen on square 3 for White, an opponent's
+    // queen on square 3 ^ 56 = 59 for Black.
+    const int white_view = aetherz::nnue::feature_index(aetherz::Color::White, aetherz::Piece::WhiteQueen, 3);
+    const int black_view = aetherz::nnue::feature_index(aetherz::Color::Black, aetherz::Piece::WhiteQueen, 3);
+    require(white_view == 4 * 64 + 3, "own queen feature index");
+    require(black_view == 384 + 4 * 64 + 59, "opponent queen feature index");
+
+    values[feature_weight_offset(white_view, 0)] = 200;
+    values[feature_weight_offset(white_view, 2)] = 300; // clipped to QA
+    values[feature_weight_offset(white_view, 3)] = -50; // clipped to 0
+    values[feature_weight_offset(black_view, 1)] = 100;
+    values[feature_bias_offset(4)] = 30;
+    values[output_weight_offset(0)] = 10;
+    values[output_weight_offset(2)] = 1;
+    values[output_weight_offset(3)] = 100;
+    values[output_weight_offset(4)] = 2;
+    values[output_weight_offset(hidden_size + 1)] = -20;
+    values[output_weight_offset(hidden_size + 4)] = 3;
+    values[output_bias_offset()] = -3000;
+
+    const std::string path = temp_path("aetherz_hand_built.nnue");
+    write_network(path, values);
+    aetherz::nnue::NnueEvaluator evaluator;
+    require(evaluator.load(path), "hand-built network loads");
+
+    // White to move: us = White gives 200^2 * 10 + 255^2 * 1 + 30^2 * 2,
+    // them = Black gives 100^2 * -20 + 30^2 * 3, so the sum is 269525.
+    // 269525 / 255 = 1056; 1056 - 3000 = -1944; -1944 * 400 / (255 * 64) = -47.6 -> -47.
+    const auto white = *aetherz::Board::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+    evaluator.refresh(white);
+    require(evaluator.evaluate(white) == -47, "hand-built network evaluates White to move exactly");
+
+    // Black to move: us = Black gives 30^2 * 2 (neuron 1 has no weight on
+    // this side), them = White gives 30^2 * 3, so the sum is 4500.
+    // 4500 / 255 = 17; 17 - 3000 = -2983; -2983 * 400 / 16320 = -73.1 -> -73.
+    const auto black = *aetherz::Board::from_fen("4k3/8/8/8/8/8/8/3QK3 b - - 0 1");
+    evaluator.refresh(black);
+    require(evaluator.evaluate(black) == -73, "hand-built network evaluates Black to move exactly");
+
+    // An output weight above 128 takes the full int32 path: neuron 7 adds
+    // 10^2 * 1000 = 100000 for the side to move.
+    // White: 369525 / 255 = 1449; -1551 * 400 / 16320 = -38.0 -> -38.
+    // Black: 104500 / 255 = 409; -2591 * 400 / 16320 = -63.5 -> -63.
+    values[feature_bias_offset(7)] = 10;
+    values[output_weight_offset(7)] = 1000;
+    write_network(path, values);
+    require(evaluator.load(path), "hand-built network with a large output weight loads");
+    evaluator.refresh(white);
+    require(evaluator.evaluate(white) == -38, "large output weight evaluates White to move exactly");
+    evaluator.refresh(black);
+    require(evaluator.evaluate(black) == -63, "large output weight evaluates Black to move exactly");
+}
+
+void test_nnue_incremental_updates_match_refresh()
+{
+    const std::string path = write_random_network("aetherz_random_incremental.nnue");
+    aetherz::nnue::NnueEvaluator evaluator;
+    require(evaluator.load(path), "random network loads");
+
+    const std::array<std::string_view, 5> fens = {
+        aetherz::Board::start_fen,
+        kiwipete_fen,
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+        "8/1P2k3/8/2pP4/8/8/4Kp2/8 w - c6 0 1",
+    };
+
+    std::uint64_t state = 2024;
+    int castles = 0;
+    int en_passants = 0;
+    int promotions = 0;
+    int captures = 0;
+    int null_moves = 0;
+    for (const std::string_view fen : fens) {
+        for (int game = 0; game < 4; ++game) {
+            auto board = *aetherz::Board::from_fen(fen);
+            evaluator.refresh(board);
+            std::vector<aetherz::Board::UndoState> undos;
+            std::vector<int> evals{evaluator.evaluate(board)};
+            require(evals.back() == evaluator.evaluate_from_scratch(board), "refresh matches a fresh evaluation");
+
+            for (int ply = 0; ply < 100; ++ply) {
+                aetherz::Board::UndoState undo;
+                if (next_random(state) % 8 == 0 && board.make_null_move(undo)) {
+                    ++null_moves;
+                } else {
+                    const auto moves = board.generate_legal_moves();
+                    if (moves.empty()) {
+                        break;
+                    }
+
+                    // Prefer the rare move kinds so that the games exercise them.
+                    aetherz::MoveList special;
+                    for (const auto& move : moves) {
+                        if (move.flag == aetherz::MoveFlag::KingCastle || move.flag == aetherz::MoveFlag::QueenCastle
+                            || move.flag == aetherz::MoveFlag::EnPassant || move.promotion != aetherz::PieceType::None) {
+                            special.push_back(move);
+                        }
+                    }
+                    const auto& choices = !special.empty() && next_random(state) % 2 == 0 ? special : moves;
+                    const auto move = choices[next_random(state) % choices.size()];
+                    require(board.make_move(move, undo), "random legal move can be made");
+
+                    castles += move.flag == aetherz::MoveFlag::KingCastle || move.flag == aetherz::MoveFlag::QueenCastle;
+                    en_passants += move.flag == aetherz::MoveFlag::EnPassant;
+                    promotions += move.promotion != aetherz::PieceType::None;
+                    captures += undo.captured != aetherz::Piece::None;
+                }
+
+                evaluator.push(aetherz::nnue::dirty_move_from(board, undo));
+                undos.push_back(undo);
+                evals.push_back(evaluator.evaluate(board));
+                require(evals.back() == evaluator.evaluate_from_scratch(board), "incremental update matches a refresh");
+            }
+
+            while (!undos.empty()) {
+                evaluator.pop();
+                board.unmake_move(undos.back());
+                undos.pop_back();
+                evals.pop_back();
+                require(evaluator.evaluate(board) == evals.back(), "pop restores the previous evaluation");
+            }
+        }
+    }
+
+    require(castles > 0, "random games include castling");
+    require(en_passants > 0, "random games include en passant");
+    require(promotions > 0, "random games include promotions");
+    require(captures > 0, "random games include captures");
+    require(null_moves > 0, "random games include null moves");
+
+    // A line deeper than the accumulator stack falls back to full
+    // evaluations and unwinds cleanly.
+    auto board = *aetherz::Board::from_fen(kiwipete_fen);
     evaluator.refresh(board);
-    require(evaluator.evaluate(board) == aetherz::evaluate_side_to_move(board), "placeholder NNUE eval falls back to classical eval");
+    const int root = evaluator.evaluate(board);
+    std::vector<aetherz::Board::UndoState> undos;
+    for (int ply = 0; ply < aetherz::nnue::accumulator_stack_size + 10; ++ply) {
+        aetherz::Board::UndoState undo;
+        require(board.make_null_move(undo), "null move can be made");
+        evaluator.push(aetherz::nnue::DirtyMove{});
+        undos.push_back(undo);
+        require(evaluator.evaluate(board) == evaluator.evaluate_from_scratch(board), "deep line evaluates correctly");
+    }
+    while (!undos.empty()) {
+        evaluator.pop();
+        board.unmake_move(undos.back());
+        undos.pop_back();
+    }
+    require(evaluator.evaluate(board) == root, "deep line unwinds to the root evaluation");
 }
 
-void test_nnue_tiny_network_uses_halfka_feature()
+void test_nnue_evaluation_is_colour_symmetric()
 {
-    const std::string path = temp_path("aetherz_tiny_feature.nnue");
-    const int feature = aetherz::nnue::halfka_feature_index(
-        aetherz::Color::White,
-        4,
-        aetherz::Piece::WhiteQueen,
-        0);
-    {
-        std::ofstream output{path};
-        output << "AETHERZ_NNUE_V1\n";
-        output << "name=tiny-feature\n";
-        output << "feature_set=halfka-v1\n";
-        output << "accumulator_size=2\n";
-        output << "hidden_size=1\n";
-        output << "input_scale=1\n";
-        output << "hidden_scale=1\n";
-        output << "output_scale=1\n";
-        output << "accumulator_bias 0 0\n";
-        output << "feature " << feature << " 32 0\n";
-        output << "hidden1_bias 0\n";
-        output << "hidden1_weight 0 1\n";
-        output << "hidden2_bias 0\n";
-        output << "hidden2_weight 0 1\n";
-        output << "output_bias 0\n";
-        output << "output_weight 1\n";
-    }
-
-    auto active = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
-    auto inactive = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-    require(active.has_value(), "active tiny NNUE FEN parses");
-    require(inactive.has_value(), "inactive tiny NNUE FEN parses");
-
+    const std::string path = write_random_network("aetherz_random_symmetry.nnue");
     aetherz::nnue::NnueEvaluator evaluator;
-    require(evaluator.load(path), "tiny NNUE file loads");
-    require(evaluator.ready(), "tiny NNUE file is inference-ready");
-    evaluator.refresh(*active);
+    require(evaluator.load(path), "random network loads");
 
-    require(evaluator.evaluate(*active) == 32, "tiny NNUE sees active HalfKA feature");
-    require(evaluator.evaluate(*inactive) == 0, "tiny NNUE ignores missing HalfKA feature");
+    const std::array<std::string_view, 5> fens = {
+        aetherz::Board::start_fen,
+        kiwipete_fen,
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+        "8/1P2k3/8/2pP4/8/8/4Kp2/8 b - - 0 1",
+    };
+
+    std::uint64_t state = 77;
+    int checked = 0;
+    for (const std::string_view fen : fens) {
+        auto board = *aetherz::Board::from_fen(fen);
+        for (int ply = 0; ply < 30; ++ply) {
+            const std::string mirrored_fen = mirror_fen(board.to_fen());
+            const auto mirrored = aetherz::Board::from_fen(mirrored_fen);
+            require(mirrored.has_value(), "mirrored FEN parses");
+            require(mirror_fen(mirrored_fen) == board.to_fen(), "mirroring twice gives the original FEN");
+            require(
+                evaluator.evaluate_from_scratch(board) == evaluator.evaluate_from_scratch(*mirrored),
+                "network evaluates a position and its colour-flipped mirror identically");
+            ++checked;
+
+            const auto moves = board.generate_legal_moves();
+            if (moves.empty()) {
+                break;
+            }
+            aetherz::Board::UndoState undo;
+            require(board.make_move(moves[next_random(state) % moves.size()], undo), "random legal move can be made");
+        }
+    }
+    require(checked > 50, "symmetry is checked along random games");
 }
 
-void test_nnue_incremental_push_matches_refresh()
+void test_search_with_nnue_returns_legal_moves()
 {
-    const std::string path = temp_path("aetherz_tiny_incremental.nnue");
-    const int feature = aetherz::nnue::halfka_feature_index(
-        aetherz::Color::White,
-        4,
-        aetherz::Piece::WhiteQueen,
-        0);
-    {
-        std::ofstream output{path};
-        output << "AETHERZ_NNUE_V1\n";
-        output << "name=tiny-incremental\n";
-        output << "feature_set=halfka-v1\n";
-        output << "accumulator_size=2\n";
-        output << "hidden_size=1\n";
-        output << "accumulator_bias 0 0\n";
-        output << "feature " << feature << " 32 0\n";
-        output << "hidden1_bias 0\n";
-        output << "hidden1_weight 0 1\n";
-        output << "hidden2_bias 0\n";
-        output << "hidden2_weight 0 1\n";
-        output << "output_bias 0\n";
-        output << "output_weight 1\n";
-    }
+    const std::string path = write_random_network("aetherz_random_search.nnue");
+    const auto start = *aetherz::Board::from_fen(kiwipete_fen);
 
-    auto board = aetherz::Board::from_fen("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1");
-    require(board.has_value(), "incremental tiny NNUE FEN parses");
+    aetherz::Search classical;
+    auto classical_board = start;
+    const auto expected = classical.find_best_move(classical_board, 6);
 
-    aetherz::nnue::NnueEvaluator evaluator;
-    require(evaluator.load(path), "incremental tiny NNUE file loads");
-    evaluator.refresh(*board);
-    require(evaluator.evaluate(*board) == 32, "incremental NNUE starts from active feature");
+    aetherz::Search search;
+    std::string error;
+    require(search.load_nnue(path, &error), "search loads the network");
+    require(search.nnue_loaded() && search.nnue_eval_file() == path, "search reports the loaded network");
+    auto board = start;
+    const auto result = search.find_best_move(board, 6);
+    require(board.to_fen() == start.to_fen(), "NNUE search restores the board");
+    require(result.best_move && is_legal_move(start, *result.best_move), "NNUE search returns a legal move");
+    require(result.depth == 6, "NNUE search reaches the requested depth");
+    require(result.nodes != expected.nodes, "NNUE search uses the network");
 
-    const auto move = require_legal_move(*board, "a1a2");
-    aetherz::Board::UndoState undo;
-    require(board->make_move(move, undo), "incremental NNUE test move can be made");
-    evaluator.push(*board, aetherz::nnue::dirty_move_from(*board, undo));
-    require(evaluator.evaluate(*board) == 0, "incremental NNUE removes moved feature");
+    aetherz::Search fallback;
+    require(fallback.load_nnue(path), "fallback search loads the network");
+    fallback.set_use_nnue(false);
+    auto fallback_board = start;
+    const auto classical_result = fallback.find_best_move(fallback_board, 6);
+    require(classical_result.nodes == expected.nodes, "UseNNUE false searches like the classical evaluation");
+    require(classical_result.score == expected.score, "UseNNUE false scores like the classical evaluation");
 
-    evaluator.pop();
-    board->unmake_move(undo);
-    require(evaluator.evaluate(*board) == 32, "incremental NNUE pop restores previous accumulator");
+    // Helpers created before and after loading share the network.
+    aetherz::Search threaded_before;
+    threaded_before.set_threads(3);
+    require(threaded_before.load_nnue(path), "threaded search loads the network");
+    auto threaded_board = start;
+    const auto threaded_result = threaded_before.find_best_move(threaded_board, 6);
+    require(
+        threaded_result.best_move && is_legal_move(start, *threaded_result.best_move),
+        "threaded NNUE search returns a legal move");
+
+    aetherz::Search threaded_after;
+    require(threaded_after.load_nnue(path), "search loads the network before adding threads");
+    threaded_after.set_threads(2);
+    auto mate_board = *aetherz::Board::from_fen("7k/8/5KQ1/8/8/8/8/8 w - - 0 1");
+    const auto mate_result = threaded_after.find_best_move(mate_board, 6);
+    require(
+        mate_result.best_move && aetherz::move_to_uci(*mate_result.best_move) == "g6g7",
+        "threaded NNUE search finds mate");
+
+    threaded_after.clear_nnue();
+    require(!threaded_after.nnue_loaded(), "clearing the network unloads it");
+    auto cleared_board = start;
+    require(threaded_after.find_best_move(cleared_board, 4).best_move.has_value(), "search runs after clearing the network");
 }
 
 std::size_t count_occurrences(const std::string& text, std::string_view needle)
@@ -867,17 +1163,18 @@ void test_time_plan_stays_within_clock()
 
 void test_uci_accepts_nnue_options()
 {
-    const std::string path = temp_path("aetherz_uci_dummy.nnue");
+    const std::string path = write_random_network("aetherz_uci_random.nnue");
+    const std::string bad_path = temp_path("aetherz_uci_bad.nnue");
     {
-        std::ofstream output{path};
-        output << "AETHERZ_NNUE_V1\n";
-        output << "name=uci-placeholder\n";
+        std::ofstream output{bad_path, std::ios::binary};
+        output << "not a network";
     }
 
     std::istringstream input{
         std::string{"uci\nsetoption name UseNNUE value true\n"}
+        + "setoption name EvalFile value " + bad_path + "\n"
         + "setoption name EvalFile value " + path + "\n"
-        + "isready\nquit\n"};
+        + "isready\nposition startpos\ngo depth 4\n"};
     std::ostringstream output;
 
     aetherz::UciEngine engine;
@@ -886,8 +1183,11 @@ void test_uci_accepts_nnue_options()
     const std::string text = output.str();
     require(text.find("option name UseNNUE") != std::string::npos, "UCI exposes UseNNUE");
     require(text.find("option name EvalFile") != std::string::npos, "UCI exposes EvalFile");
-    require(text.find("info string loaded NNUE " + path) != std::string::npos, "UCI loads placeholder NNUE");
+    require(text.find("info string failed to load NNUE: ") != std::string::npos, "UCI reports a bad network file");
+    require(text.find("info string loaded NNUE " + path) != std::string::npos, "UCI loads the network");
     require(text.find("readyok") != std::string::npos, "UCI remains ready after NNUE load");
+    require(text.find("info depth 4 ") != std::string::npos, "UCI searches with the network");
+    require(count_occurrences(text, "bestmove ") == 1, "UCI NNUE search reports one bestmove");
 }
 
 std::vector<std::string> read_lines(const std::string& path)
@@ -1086,9 +1386,11 @@ int main()
     test_search_scores_fifty_move_draw();
     test_search_scores_repetition_draw();
     test_uci_go_time_controls();
-    test_nnue_placeholder_loads_and_falls_back_to_classical_eval();
-    test_nnue_tiny_network_uses_halfka_feature();
-    test_nnue_incremental_push_matches_refresh();
+    test_nnue_loads_bullet_sized_files();
+    test_nnue_matches_hand_computed_evaluation();
+    test_nnue_incremental_updates_match_refresh();
+    test_nnue_evaluation_is_colour_symmetric();
+    test_search_with_nnue_returns_legal_moves();
     test_uci_accepts_nnue_options();
     test_uci_infinite_search_waits_for_stop();
     test_uci_depth_search_finishes_at_end_of_input();

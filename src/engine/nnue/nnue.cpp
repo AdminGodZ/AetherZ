@@ -2,149 +2,202 @@
 
 #include "engine/evaluate.hpp"
 
-#include <algorithm>
+#include <bit>
 
 namespace aetherz::nnue {
 namespace {
 
-bool king_moved(const DirtyMove& dirty, Color perspective)
-{
-    for (int index = 0; index < dirty.removed_count; ++index) {
-        const Piece piece = dirty.removed[index].piece;
-        if (piece != Piece::None && piece_type(piece) == PieceType::King && piece_color(piece) == perspective) {
-            return true;
-        }
-    }
-    for (int index = 0; index < dirty.added_count; ++index) {
-        const Piece piece = dirty.added[index].piece;
-        if (piece != Piece::None && piece_type(piece) == PieceType::King && piece_color(piece) == perspective) {
-            return true;
-        }
-    }
+// Far enough below zero that pushes without a refresh never reach a valid
+// stack index.
+constexpr int no_accumulators = -(1 << 20);
 
-    return false;
+// out = in + sum(adds) - sum(subs). Plain loops over aligned int16 arrays so
+// that the compiler vectorises them; int16 overflow wraps as in Bullet.
+template <int Adds, int Subs>
+void update(
+    std::int16_t* __restrict out,
+    const std::int16_t* __restrict in,
+    const std::array<const std::int16_t*, 2>& adds,
+    const std::array<const std::int16_t*, 2>& subs)
+{
+    for (int index = 0; index < hidden_size; ++index) {
+        int value = in[index];
+        for (int add = 0; add < Adds; ++add) {
+            value += adds[add][index];
+        }
+        for (int sub = 0; sub < Subs; ++sub) {
+            value -= subs[sub][index];
+        }
+        out[index] = static_cast<std::int16_t>(value);
+    }
+}
+
+template <int Sign>
+void apply_feature(Accumulator& accumulator, const std::int16_t* weights)
+{
+    for (int index = 0; index < hidden_size; ++index) {
+        accumulator.values[index] = static_cast<std::int16_t>(accumulator.values[index] + Sign * weights[index]);
+    }
 }
 
 } // namespace
 
 bool NnueEvaluator::load(std::string_view path, std::string* error)
 {
-    accumulator_.clear();
-    return network_.load(path, error);
+    auto network = load_network(path, error);
+    if (!network) {
+        clear();
+        return false;
+    }
+
+    network_ = std::move(network);
+    path_ = std::string{path};
+    if (!stack_) {
+        stack_ = std::make_unique<AccumulatorStack>();
+    }
+    top_ = no_accumulators;
+    return true;
 }
 
 void NnueEvaluator::clear()
 {
-    accumulator_.clear();
-    network_.clear();
+    network_.reset();
+    path_.clear();
+    stack_.reset();
+    top_ = no_accumulators;
+}
+
+void NnueEvaluator::share_network(const NnueEvaluator& other)
+{
+    if (!other.network_) {
+        clear();
+        return;
+    }
+
+    network_ = other.network_;
+    path_ = other.path_;
+    if (!stack_) {
+        stack_ = std::make_unique<AccumulatorStack>();
+    }
+    top_ = no_accumulators;
 }
 
 void NnueEvaluator::refresh(const Board& board)
 {
-    if (!network_.ready()) {
-        accumulator_.clear();
+    if (!network_) {
         return;
     }
 
-    accumulator_.refresh(build_accumulator(board));
+    top_ = 0;
+    build(board, (*stack_)[0]);
 }
 
-void NnueEvaluator::push(const Board& board, const DirtyMove& dirty)
+void NnueEvaluator::push(const DirtyMove& dirty)
 {
-    if (!network_.ready()) {
+    if (!network_) {
         return;
     }
 
-    accumulator_.push(update_accumulator(board, dirty));
+    ++top_;
+    // Too deep (or never refreshed): evaluate() rebuilds from the board.
+    if (top_ <= 0 || top_ >= accumulator_stack_size) {
+        return;
+    }
+
+    const AccumulatorPair& parent = (*stack_)[top_ - 1];
+    AccumulatorPair& child = (*stack_)[top_];
+    for (const Color perspective : {Color::White, Color::Black}) {
+        std::array<const std::int16_t*, 2> adds{};
+        std::array<const std::int16_t*, 2> subs{};
+        for (int index = 0; index < dirty.added_count; ++index) {
+            const auto [piece, square] = dirty.added[index];
+            adds[index] = network_->feature_weights[feature_index(perspective, piece, square)].values.data();
+        }
+        for (int index = 0; index < dirty.removed_count; ++index) {
+            const auto [piece, square] = dirty.removed[index];
+            subs[index] = network_->feature_weights[feature_index(perspective, piece, square)].values.data();
+        }
+
+        const int side = color_index(perspective);
+        std::int16_t* out = child[side].values.data();
+        const std::int16_t* in = parent[side].values.data();
+        switch (dirty.added_count * 4 + dirty.removed_count) {
+        case 0:
+            update<0, 0>(out, in, adds, subs);
+            break;
+        case 1 * 4 + 1:
+            update<1, 1>(out, in, adds, subs);
+            break;
+        case 1 * 4 + 2:
+            update<1, 2>(out, in, adds, subs);
+            break;
+        case 2 * 4 + 2:
+            update<2, 2>(out, in, adds, subs);
+            break;
+        default:
+            // Not produced by dirty_move_from, but cheap to support.
+            child[side] = parent[side];
+            for (int index = 0; index < dirty.added_count; ++index) {
+                apply_feature<1>(child[side], adds[index]);
+            }
+            for (int index = 0; index < dirty.removed_count; ++index) {
+                apply_feature<-1>(child[side], subs[index]);
+            }
+            break;
+        }
+    }
 }
 
 void NnueEvaluator::pop()
 {
-    accumulator_.pop();
+    if (network_) {
+        --top_;
+    }
 }
 
 int NnueEvaluator::evaluate(const Board& board) const
 {
-    if (!network_.ready()) {
+    if (!network_) {
+        return evaluate_side_to_move(board);
+    }
+    if (top_ < 0 || top_ >= accumulator_stack_size) {
+        return evaluate_from_scratch(board);
+    }
+
+    return evaluate(board.side_to_move(), (*stack_)[top_]);
+}
+
+int NnueEvaluator::evaluate_from_scratch(const Board& board) const
+{
+    if (!network_) {
         return evaluate_side_to_move(board);
     }
 
-    if (const AccumulatorState* current = accumulator_.current();
-        current != nullptr && current->hash == board.hash()) {
-        return network_.evaluate(board.side_to_move(), *current);
-    }
-
-    const AccumulatorState refreshed = build_accumulator(board);
-    return network_.evaluate(board.side_to_move(), refreshed);
+    AccumulatorPair accumulators;
+    build(board, accumulators);
+    return evaluate(board.side_to_move(), accumulators);
 }
 
-AccumulatorState NnueEvaluator::build_accumulator(const Board& board) const
+int NnueEvaluator::evaluate(Color side_to_move, const AccumulatorPair& accumulators) const
 {
-    AccumulatorState state;
-    state.white = network_.accumulator_bias();
-    state.black = network_.accumulator_bias();
-    state.hash = board.hash();
-    state.valid = true;
-
-    for (const int feature : active_halfka_features(board, Color::White)) {
-        apply_feature(state.white, feature, 1);
-    }
-    for (const int feature : active_halfka_features(board, Color::Black)) {
-        apply_feature(state.black, feature, 1);
-    }
-
-    return state;
+    const int us = color_index(side_to_move);
+    return network_->evaluate(accumulators[us], accumulators[us ^ 1]);
 }
 
-AccumulatorState NnueEvaluator::update_accumulator(const Board& board, const DirtyMove& dirty) const
+void NnueEvaluator::build(const Board& board, AccumulatorPair& accumulators) const
 {
-    const AccumulatorState* current = accumulator_.current();
-    if (current == nullptr || static_cast<int>(current->white.size()) != network_.accumulator_size()) {
-        return build_accumulator(board);
-    }
+    auto& white = accumulators[color_index(Color::White)];
+    auto& black = accumulators[color_index(Color::Black)];
+    white = network_->feature_bias;
+    black = network_->feature_bias;
 
-    AccumulatorState next = *current;
-    next.hash = board.hash();
-    next.valid = true;
-
-    const auto update_perspective = [&](Color perspective, std::vector<std::int32_t>& values) {
-        if (king_moved(dirty, perspective)) {
-            values = network_.accumulator_bias();
-            for (const int feature : active_halfka_features(board, perspective)) {
-                apply_feature(values, feature, 1);
-            }
-            return;
+    for (int index = 0; index < 12; ++index) {
+        const auto piece = static_cast<Piece>(index + 1);
+        for (Bitboard pieces = board.pieces(piece); pieces != 0; pieces &= pieces - 1) {
+            const int square = std::countr_zero(pieces);
+            apply_feature<1>(white, network_->feature_weights[feature_index(Color::White, piece, square)].values.data());
+            apply_feature<1>(black, network_->feature_weights[feature_index(Color::Black, piece, square)].values.data());
         }
-
-        const int king = board.king_square(perspective);
-        for (int index = 0; index < dirty.removed_count; ++index) {
-            const auto [piece, square] = dirty.removed[index];
-            apply_feature(values, halfka_feature_index(perspective, king, piece, square), -1);
-        }
-        for (int index = 0; index < dirty.added_count; ++index) {
-            const auto [piece, square] = dirty.added[index];
-            apply_feature(values, halfka_feature_index(perspective, king, piece, square), 1);
-        }
-    };
-
-    update_perspective(Color::White, next.white);
-    update_perspective(Color::Black, next.black);
-    return next;
-}
-
-void NnueEvaluator::apply_feature(std::vector<std::int32_t>& accumulator, int feature, int sign) const
-{
-    if (feature < 0) {
-        return;
-    }
-
-    const auto* weights = network_.feature_weights(feature);
-    if (weights == nullptr || weights->size() != accumulator.size()) {
-        return;
-    }
-
-    for (std::size_t index = 0; index < accumulator.size(); ++index) {
-        accumulator[index] += sign * (*weights)[index];
     }
 }
 

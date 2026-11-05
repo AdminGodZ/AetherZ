@@ -21,6 +21,7 @@ inline constexpr int max_search_ply = 128;
 inline constexpr int max_search_depth = max_search_ply - 8;
 inline constexpr int mate_score = 30000;
 inline constexpr int mate_bound = mate_score - max_search_ply;
+static_assert(nnue::accumulator_stack_size >= max_search_ply + 8, "every search ply has an NNUE accumulator");
 
 // Moves until mate for a mate score (negative when getting mated), or 0 when
 // the score is not a mate score.
@@ -173,7 +174,6 @@ public:
     [[nodiscard]] bool load_nnue(std::string_view path, std::string* error = nullptr);
     void clear_nnue();
     [[nodiscard]] bool nnue_loaded() const;
-    [[nodiscard]] bool nnue_ready() const;
     [[nodiscard]] std::string nnue_eval_file() const;
 
 private:
@@ -296,7 +296,7 @@ private:
     void pop_position();
     void refresh_nnue(const Board& board);
     void push_nnue(const Board& board, const Board::UndoState& undo);
-    void push_nnue_null(const Board& board);
+    void push_nnue_null();
     void pop_nnue();
     [[nodiscard]] bool can_use_nnue() const;
     void clear_killers();

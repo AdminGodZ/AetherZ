@@ -307,7 +307,7 @@ void Search::set_threads(int threads)
     while (helpers_.size() < helper_count) {
         auto helper = std::unique_ptr<Search>(new Search(table_));
         helper->shared_stop_ = &helpers_stop_;
-        helper->nnue_ = nnue_;
+        helper->nnue_.share_network(nnue_);
         helper->use_nnue_ = use_nnue_;
         helpers_.push_back(std::move(helper));
     }
@@ -519,7 +519,7 @@ bool Search::load_nnue(std::string_view path, std::string* error)
 {
     const bool loaded = nnue_.load(path, error);
     for (const auto& helper : helpers_) {
-        helper->nnue_ = nnue_;
+        helper->nnue_.share_network(nnue_);
     }
     return loaded;
 }
@@ -535,11 +535,6 @@ void Search::clear_nnue()
 bool Search::nnue_loaded() const
 {
     return nnue_.loaded();
-}
-
-bool Search::nnue_ready() const
-{
-    return nnue_.ready();
 }
 
 std::string Search::nnue_eval_file() const
@@ -828,7 +823,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         && can_try_null_move(board, depth, ply, alpha, beta)) {
         Board::UndoState undo;
         if (board.make_null_move(undo)) {
-            push_nnue_null(board);
+            push_nnue_null();
             const int reduction = 3 + depth / 3 + std::min((current_static_eval() - beta) / 200, 3);
             const int score = -negamax(board, depth - 1 - reduction, ply + 1, -beta, -beta + 1, {});
             pop_nnue();
@@ -1092,7 +1087,9 @@ int Search::corrected_eval(const Board& board, int raw_eval) const
 int Search::raw_evaluate(const Board& board) const
 {
     if (can_use_nnue()) {
-        return nnue_.evaluate(board);
+        // Keep network scores clear of mate scores and within the int16
+        // eval stored in the transposition table.
+        return std::clamp(nnue_.evaluate(board), -mate_score + 1000, mate_score - 1000);
     }
 
     return evaluate_side_to_move(board);
@@ -1473,14 +1470,14 @@ void Search::refresh_nnue(const Board& board)
 void Search::push_nnue(const Board& board, const Board::UndoState& undo)
 {
     if (can_use_nnue()) {
-        nnue_.push(board, nnue::dirty_move_from(board, undo));
+        nnue_.push(nnue::dirty_move_from(board, undo));
     }
 }
 
-void Search::push_nnue_null(const Board& board)
+void Search::push_nnue_null()
 {
     if (can_use_nnue()) {
-        nnue_.push(board, nnue::DirtyMove{});
+        nnue_.push(nnue::DirtyMove{});
     }
 }
 
@@ -1493,7 +1490,7 @@ void Search::pop_nnue()
 
 bool Search::can_use_nnue() const
 {
-    return use_nnue_ && nnue_.ready();
+    return use_nnue_ && nnue_.loaded();
 }
 
 void Search::clear_killers()
