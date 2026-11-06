@@ -174,7 +174,14 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
     output_ = &output;
 
     std::string line;
+    bool first_line = true;
     while (std::getline(input, line)) {
+        // Windows PowerShell 5.1 starts piped input with a UTF-8 byte order
+        // mark, which would otherwise hide the first command.
+        if (first_line && line.starts_with("\xEF\xBB\xBF")) {
+            line.erase(0, 3);
+        }
+        first_line = false;
         const auto tokens = split_words(line);
         if (tokens.empty()) {
             continue;

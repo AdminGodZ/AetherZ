@@ -1141,6 +1141,15 @@ void test_search_stopped_at_once_returns_a_legal_move()
     require(output.str().find("bestmove 0000") == std::string::npos, "UCI never reports a null bestmove after stop");
 }
 
+void test_uci_ignores_a_byte_order_mark()
+{
+    std::istringstream input{"\xEF\xBB\xBFuci\nisready\nquit\n"};
+    std::ostringstream output;
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+    require(output.str().find("uciok") != std::string::npos, "UCI answers a first command after a byte order mark");
+}
+
 void test_uci_depth_search_finishes_at_end_of_input()
 {
     std::istringstream input{
@@ -1481,6 +1490,7 @@ int main()
     test_uci_accepts_nnue_options();
     test_uci_infinite_search_waits_for_stop();
     test_search_stopped_at_once_returns_a_legal_move();
+    test_uci_ignores_a_byte_order_mark();
     test_uci_depth_search_finishes_at_end_of_input();
     test_uci_reports_mate_scores();
     test_uci_ponder_waits_for_ponderhit();
