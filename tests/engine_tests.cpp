@@ -1116,6 +1116,31 @@ void test_uci_infinite_search_waits_for_stop()
     require(count_occurrences(text, "bestmove ") == 1, "infinite search reports exactly one bestmove after stop");
 }
 
+void test_search_stopped_at_once_returns_a_legal_move()
+{
+    const auto board = *aetherz::Board::from_fen(kiwipete_fen);
+    aetherz::Search search;
+    aetherz::SearchLimits limits;
+    limits.max_depth = 20;
+    limits.position_history = {board.hash()};
+    limits.on_search_started = [&search] { search.request_stop(); };
+
+    aetherz::Board search_board = board;
+    const aetherz::SearchResult result = search.find_best_move(search_board, limits);
+    require(result.best_move && is_legal_move(board, *result.best_move), "search stopped at once still returns a legal move");
+    require(result.depth == 1, "search stopped at once only completes depth 1");
+
+    std::istringstream input{
+        "position startpos\n"
+        "go infinite\n"
+        "stop\n"
+        "quit\n"};
+    std::ostringstream output;
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+    require(output.str().find("bestmove 0000") == std::string::npos, "UCI never reports a null bestmove after stop");
+}
+
 void test_uci_depth_search_finishes_at_end_of_input()
 {
     std::istringstream input{
@@ -1427,6 +1452,7 @@ int main()
     test_search_with_nnue_returns_legal_moves();
     test_uci_accepts_nnue_options();
     test_uci_infinite_search_waits_for_stop();
+    test_search_stopped_at_once_returns_a_legal_move();
     test_uci_depth_search_finishes_at_end_of_input();
     test_uci_reports_mate_scores();
     test_uci_ponder_waits_for_ponderhit();
