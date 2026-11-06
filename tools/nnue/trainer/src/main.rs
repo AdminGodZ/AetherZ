@@ -1,8 +1,8 @@
-//! Trainer for AetherZ's NNUE: bullet's `examples/simple.rs` with
-//! `HIDDEN_SIZE = 256` and command-line options.
+//! Trainer for AetherZ's NNUE: bullet's `examples/simple.rs` with a
+//! configurable hidden size (256 by default) and command-line options.
 //!
 //! The architecture and quantisation must match `src/engine/nnue/network.hpp`:
-//! inputs `Chess768`, `(768 -> 256)x2 -> 1`, SCReLU, side to move's accumulator
+//! inputs `Chess768`, `(768 -> N)x2 -> 1`, SCReLU, side to move's accumulator
 //! first, `QA = 255`, `QB = 64`, `SCALE = 400`. Each checkpoint directory
 //! `<output-dir>/<net-id>-<superbatch>/` contains `quantised.bin`, which the
 //! engine loads with `setoption name EvalFile value <path>`.
@@ -20,7 +20,6 @@ use bullet::{
     value::{ValueTrainerBuilder, loader},
 };
 
-const HIDDEN_SIZE: usize = 256;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
@@ -28,13 +27,15 @@ const QB: i16 = 64;
 const USAGE: &str = "\
 Usage: aetherz-trainer [OPTIONS] <DATA.bf>...
 
-Trains AetherZ's (768 -> 256)x2 -> 1 network on BulletFormat data
+Trains AetherZ's (768 -> N)x2 -> 1 network on BulletFormat data
 (convert `aetherz datagen` output with `bullet-utils convert`, then shuffle).
 
 Options (defaults are those of bullet's `simple` example):
   --data <FILE>                  Training data (repeatable; positional arguments work too)
   --output-dir <DIR>             Checkpoint directory                    [checkpoints]
   --net-id <ID>                  Network name; checkpoints are <ID>-<N>  [simple]
+  --hidden-size <N>              Hidden layer size; the engine must be
+                                 built for it (CMake AETHERZ_NNUE_HIDDEN) [256]
   --superbatches <N>             Last superbatch                         [40]
   --start-superbatch <N>         First superbatch                        [1]
   --start-lr <LR>                Initial learning rate                   [0.001]
@@ -54,6 +55,7 @@ struct Args {
     data: Vec<String>,
     output_dir: String,
     net_id: String,
+    hidden_size: usize,
     superbatches: usize,
     start_superbatch: usize,
     start_lr: f32,
@@ -81,6 +83,7 @@ fn parse_args() -> Args {
         data: Vec::new(),
         output_dir: "checkpoints".to_string(),
         net_id: "simple".to_string(),
+        hidden_size: 256,
         superbatches: 40,
         start_superbatch: 1,
         start_lr: 0.001,
@@ -109,6 +112,7 @@ fn parse_args() -> Args {
             "--data" => args.data.push(parse(&flag, value())),
             "--output-dir" => args.output_dir = parse(&flag, value()),
             "--net-id" => args.net_id = parse(&flag, value()),
+            "--hidden-size" => args.hidden_size = parse(&flag, value()),
             "--superbatches" => args.superbatches = parse(&flag, value()),
             "--start-superbatch" => args.start_superbatch = parse(&flag, value()),
             "--start-lr" => args.start_lr = parse(&flag, value()),
@@ -133,6 +137,9 @@ fn parse_args() -> Args {
     if args.save_rate == 0 || args.lr_step == 0 || args.batch_size == 0 || args.batches_per_superbatch == 0 {
         fail("--save-rate, --lr-step, --batch-size and --batches-per-superbatch must be non-zero");
     }
+    if args.hidden_size == 0 || args.hidden_size % 16 != 0 {
+        fail("--hidden-size must be a positive multiple of 16");
+    }
     if !(0.0..=1.0).contains(&args.wdl) {
         fail("--wdl must be in [0, 1]");
     }
@@ -141,6 +148,7 @@ fn parse_args() -> Args {
 
 fn main() {
     let args = parse_args();
+    let hidden_size = args.hidden_size;
 
     let mut trainer = ValueTrainerBuilder::default()
         // makes `ntm_inputs` available below
@@ -158,8 +166,8 @@ fn main() {
         // target = wdl * game_result + (1 - wdl) * sigmoid(score / SCALE)
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs, ntm_inputs| {
-            let l0 = builder.new_affine("l0", 768, HIDDEN_SIZE);
-            let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, 1);
+            let l0 = builder.new_affine("l0", 768, hidden_size);
+            let l1 = builder.new_affine("l1", 2 * hidden_size, 1);
 
             // side to move's accumulator first, as the engine expects
             let stm_hidden = l0.forward(stm_inputs).screlu();

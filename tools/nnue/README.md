@@ -38,11 +38,15 @@ bullet-utils convert --from text --input data/aetherz-train.txt --output data/ae
 ## Training
 
 `tools/nnue/trainer/` is a small Rust crate: [Bullet](https://github.com/jw1912/bullet)'s
-`examples/simple.rs` with `HIDDEN_SIZE = 256` and command-line options. It
-depends on Bullet at a pinned commit. The engine's network is fixed at
-compile time (`src/engine/nnue/network.hpp`) and the trainer matches it:
+`examples/simple.rs` with a configurable hidden size and command-line
+options. It depends on Bullet at a pinned commit. The engine's network
+architecture is fixed at compile time (`src/engine/nnue/network.hpp`) and the
+trainer matches it:
 
-- inputs `Chess768`, `(768 -> 256)x2 -> 1`, SCReLU, side to move first
+- inputs `Chess768`, `(768 -> N)x2 -> 1`, SCReLU, side to move first
+- `N` is `--hidden-size` (default 256). The engine takes it from its built-in
+  network, or from `-DAETHERZ_NNUE_HIDDEN=N` when built without one
+  (`-DAETHERZ_EVALFILE=`); it cannot load networks of another size.
 - `QA = 255`, `QB = 64`, `SCALE = 400`
 - save format `l0w`, `l0b` quantised by QA, `l1w` by QB, `l1b` by QA * QB
 

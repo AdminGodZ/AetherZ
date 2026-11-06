@@ -17,6 +17,9 @@ option(AETHERZ_LTO "Enable link-time optimization" ON)
 # with -DAETHERZ_EVALFILE= for an engine that uses the classical evaluation.
 set(AETHERZ_EVALFILE "${CMAKE_CURRENT_SOURCE_DIR}/networks/aetherz-v1-w30.bin" CACHE FILEPATH
     "Bullet quantised.bin to build into the engine as its default network")
+# The engine loads (768 -> N)x2 -> 1 networks of one hidden size N, fixed at
+# compile time. Empty: the size of the built-in network, or 256 without one.
+set(AETHERZ_NNUE_HIDDEN "" CACHE STRING "NNUE hidden layer size (empty: from AETHERZ_EVALFILE)")
 
 if(AETHERZ_LTO)
     include(CheckIPOSupported)
@@ -75,11 +78,37 @@ if(AETHERZ_EVALFILE)
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_network.inc"
         CONTENT "${aetherz_network_bytes}\n")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${AETHERZ_EVALFILE}")
+    # A network file holds hidden * (768 + 3) + 1 int16 values, padded by
+    # Bullet to a multiple of 64 bytes.
+    file(SIZE "${AETHERZ_EVALFILE}" aetherz_network_size)
+    math(EXPR aetherz_network_hidden "(${aetherz_network_size} / 2 - 1) / 771")
+    if(AETHERZ_NNUE_HIDDEN STREQUAL "")
+        set(aetherz_nnue_hidden ${aetherz_network_hidden})
+    elseif(NOT AETHERZ_NNUE_HIDDEN EQUAL aetherz_network_hidden)
+        message(FATAL_ERROR "AETHERZ_NNUE_HIDDEN is ${AETHERZ_NNUE_HIDDEN}, but ${AETHERZ_EVALFILE} "
+            "looks like a network with ${aetherz_network_hidden} hidden neurons")
+    endif()
     set_source_files_properties(src/engine/nnue/embedded.cpp PROPERTIES
         COMPILE_DEFINITIONS AETHERZ_EMBEDDED_NETWORK
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/generated")
     message(STATUS "Built-in network: ${AETHERZ_EVALFILE}")
 endif()
+if(NOT DEFINED aetherz_nnue_hidden)
+    if(AETHERZ_NNUE_HIDDEN STREQUAL "")
+        set(aetherz_nnue_hidden 256)
+    else()
+        set(aetherz_nnue_hidden ${AETHERZ_NNUE_HIDDEN})
+    endif()
+endif()
+if(NOT aetherz_nnue_hidden MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "the NNUE hidden size must be a positive multiple of 16, not ${aetherz_nnue_hidden}")
+endif()
+math(EXPR aetherz_nnue_hidden_remainder "${aetherz_nnue_hidden} % 16")
+if(aetherz_nnue_hidden LESS 16 OR NOT aetherz_nnue_hidden_remainder EQUAL 0)
+    message(FATAL_ERROR "the NNUE hidden size must be a positive multiple of 16, not ${aetherz_nnue_hidden}")
+endif()
+target_compile_definitions(aetherz_engine PUBLIC AETHERZ_NNUE_HIDDEN=${aetherz_nnue_hidden})
+message(STATUS "NNUE hidden size: ${aetherz_nnue_hidden}")
 
 find_package(Threads REQUIRED)
 target_link_libraries(aetherz_engine PUBLIC Threads::Threads)
