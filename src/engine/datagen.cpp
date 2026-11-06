@@ -2,6 +2,7 @@
 
 #include "engine/board.hpp"
 #include "engine/search.hpp"
+#include "engine/syzygy.hpp"
 #include "engine/thread.hpp"
 
 #include <algorithm>
@@ -66,6 +67,26 @@ enum class GameResult {
     Draw,
 };
 
+// The tablebase result of a position, if it is in the loaded tables. Wins
+// and losses that the fifty-move rule turns into draws are draws, as in the
+// games themselves.
+std::optional<GameResult> tablebase_result(const Board& board)
+{
+    const auto wdl = syzygy::probe_wdl(board);
+    if (!wdl) {
+        return std::nullopt;
+    }
+    const bool white = board.side_to_move() == Color::White;
+    switch (*wdl) {
+    case syzygy::Wdl::Win:
+        return white ? GameResult::WhiteWins : GameResult::BlackWins;
+    case syzygy::Wdl::Loss:
+        return white ? GameResult::BlackWins : GameResult::WhiteWins;
+    default:
+        return GameResult::Draw;
+    }
+}
+
 const char* result_text(GameResult result)
 {
     switch (result) {
@@ -101,11 +122,13 @@ bool play_random_opening(Board& board, std::vector<std::uint64_t>& history, int 
 }
 
 // Plays one self-play game and returns its training samples and result.
+// adjudicated says whether the tablebases decided it.
 GameResult play_game(
     Search& search,
     const DatagenConfig& config,
     std::uint64_t game_index,
-    std::vector<Sample>& samples)
+    std::vector<Sample>& samples,
+    bool& adjudicated)
 {
     // Every game depends only on the seed and its index.
     std::mt19937_64 rng{config.seed ^ (0x9E3779B97F4A7C15ULL * (game_index + 1))};
@@ -138,6 +161,12 @@ GameResult play_game(
                 || std::count(history.begin(), history.end(), board.hash()) >= 3) {
                 return GameResult::Draw;
             }
+            if (!config.syzygy_path.empty()) {
+                if (const auto result = tablebase_result(board)) {
+                    adjudicated = true;
+                    return *result;
+                }
+            }
 
             SearchLimits limits;
             limits.max_depth = max_search_depth;
@@ -155,7 +184,8 @@ GameResult play_game(
                 break;
             }
 
-            if (!in_check && !is_tactical(*result.best_move) && std::abs(white_score) < mate_bound) {
+            // Mate and tablebase scores are left out: they are not evaluations.
+            if (!in_check && !is_tactical(*result.best_move) && std::abs(white_score) < tb_win_score - max_search_ply) {
                 samples.push_back(Sample{.fen = board.to_fen(), .white_score = white_score});
             }
 
@@ -218,6 +248,14 @@ DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* p
         }
     }
 
+    // The tables are global, so they are loaded once for all workers.
+    if (!config.syzygy_path.empty() && (!syzygy::init(config.syzygy_path) || syzygy::max_pieces() == 0)) {
+        if (error != nullptr) {
+            *error = "no Syzygy tablebases found in " + config.syzygy_path;
+        }
+        return stats;
+    }
+
     std::ofstream output{config.output_path, std::ios::app};
     if (!output) {
         if (error != nullptr) {
@@ -247,7 +285,8 @@ DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* p
                 break;
             }
 
-            const GameResult result = play_game(*search, config, game, samples);
+            bool adjudicated = false;
+            const GameResult result = play_game(*search, config, game, samples, adjudicated);
             lines.clear();
             for (const Sample& sample : samples) {
                 lines += sample.fen;
@@ -265,6 +304,7 @@ DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* p
             stats.white_wins += result == GameResult::WhiteWins ? 1 : 0;
             stats.black_wins += result == GameResult::BlackWins ? 1 : 0;
             stats.draws += result == GameResult::Draw ? 1 : 0;
+            stats.tablebase_results += adjudicated ? 1 : 0;
 
             if (progress != nullptr && (stats.games % report_every == 0 || stats.games == config.games)) {
                 const double seconds = std::max(
@@ -273,7 +313,11 @@ DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* p
                           << " positions " << stats.positions
                           << " (" << static_cast<std::uint64_t>(static_cast<double>(stats.positions) / seconds) << "/s)"
                           << " white " << stats.white_wins << " black " << stats.black_wins
-                          << " draw " << stats.draws << std::endl;
+                          << " draw " << stats.draws;
+                if (!config.syzygy_path.empty()) {
+                    *progress << " tablebase " << stats.tablebase_results;
+                }
+                *progress << std::endl;
             }
         }
     };
@@ -293,7 +337,7 @@ int run_datagen_command(const std::vector<std::string>& args, std::ostream& outp
     const auto usage = [&error] {
         error << "usage: aetherz datagen <output-file> [--games N] [--threads N] [--nodes N]\n"
                  "                       [--random-plies N] [--seed N] [--hash MB]\n"
-                 "                       [--eval-file <network or <embedded>>]\n";
+                 "                       [--eval-file <network or <embedded>>] [--syzygy <path>]\n";
         return 1;
     };
 
@@ -309,6 +353,10 @@ int run_datagen_command(const std::vector<std::string>& args, std::ostream& outp
         }
         if (args[index] == "--eval-file") {
             config.eval_file = args[index + 1];
+            continue;
+        }
+        if (args[index] == "--syzygy") {
+            config.syzygy_path = args[index + 1];
             continue;
         }
         const auto value = parse_unsigned(args[index + 1]);
@@ -338,6 +386,7 @@ int run_datagen_command(const std::vector<std::string>& args, std::ostream& outp
            << config.nodes << " nodes per move, " << config.random_plies << "-" << config.random_plies + 1
            << " random plies, seed " << config.seed << ", eval "
            << (config.eval_file.empty() ? std::string{"classical"} : config.eval_file)
+           << (config.syzygy_path.empty() ? std::string{} : ", tablebases " + config.syzygy_path)
            << ", appending to " << config.output_path << std::endl;
     std::string failure;
     const DatagenStats stats = generate_training_data(config, &output, &failure);

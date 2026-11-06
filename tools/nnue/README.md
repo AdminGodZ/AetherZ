@@ -15,6 +15,10 @@ Generate training positions with self-play:
   ply 80). Openings scored beyond 1000 cp are replayed.
 - A position is kept when the side to move is not in check, the move played
   from it is not a capture or promotion, and its score is not a mate score.
+- `--syzygy <folder>` ends a game with the tablebase result as soon as a
+  capture or pawn move reaches a position in the Syzygy tables (cursed wins
+  and blessed losses count as draws), and lets the searches use the tables.
+  Mate and tablebase scores are never written as samples.
 - `--eval-file <quantised.bin>` plays the games with a network instead of
   the classical evaluation (`<embedded>` selects a built-in network), for
   training the next network on the previous one's games.
