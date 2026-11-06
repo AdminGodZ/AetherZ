@@ -585,6 +585,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
     const int original_alpha = alpha;
     const int original_beta = beta;
     bool searched_move = false;
+    int searched_moves = 0;
 
     for (std::size_t index = 0; index < moves.size(); ++index) {
         if (searched_move && should_stop(true)) {
@@ -601,13 +602,19 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         push_position(board);
         push_nnue(board, undo);
 
+        ++searched_moves;
         const int extension = tactical_extension(move, depth, 0, gives_check, see_gain);
         const int child_depth = std::max(0, depth - 1 + extension);
         int score = 0;
         if (!searched_move) {
             score = -negamax(board, child_depth, 1, -beta, -alpha, move);
         } else {
-            score = -negamax(board, child_depth, 1, -alpha - 1, -alpha, move);
+            // Late quiet moves are searched less deeply first, as in the tree.
+            const int reduction = late_move_reduction(move, depth, 0, searched_moves, in_check, gives_check, true, true, {});
+            score = -negamax(board, std::max(0, child_depth - reduction), 1, -alpha - 1, -alpha, move);
+            if (reduction > 0 && !stop_ && score > alpha) {
+                score = -negamax(board, child_depth, 1, -alpha - 1, -alpha, move);
+            }
             if (!stop_ && score > alpha && score < beta) {
                 score = -negamax(board, child_depth, 1, -beta, -alpha, move);
             }
@@ -1393,7 +1400,7 @@ int Search::late_move_reduction(
     bool improving,
     Move previous_move) const
 {
-    if (depth < 3 || ply <= 0 || in_check || move_index < (pv_node ? 4 : 3)) {
+    if (depth < 3 || in_check || move_index < (pv_node ? 4 : 3)) {
         return 0;
     }
     if (!is_quiet(move)) {
