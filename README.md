@@ -32,6 +32,9 @@ or point it at another network file.
 ctest --test-dir build --output-on-failure
 ```
 
+The Syzygy tests need some tables (at least KQvK, KRvK and KPvK, WDL and
+DTZ) and are skipped unless `AETHERZ_SYZYGY_PATH` names their folder.
+
 ## Tools
 
 ```bash
@@ -120,3 +123,29 @@ go depth 5
 go movetime 1000
 go wtime 60000 btime 60000 winc 1000 binc 1000
 ```
+
+## Syzygy Tablebases
+
+AetherZ uses Syzygy endgame tablebases the way Stockfish does, through
+[Fathom](third_party/fathom) (MIT). The tables are not part of the engine:
+download them separately, for example the 3-, 4- and 5-piece set (about
+1 GB) from https://tablebase.lichess.ovh/tables/standard/, and point the
+engine at the folder (several folders are separated by `:`, or `;` on
+Windows):
+
+```text
+setoption name SyzygyPath value /path/to/syzygy
+```
+
+- At the root, a position in the tables searches only the moves that keep
+  its best result, ranked by the DTZ tables (or the WDL tables when DTZ
+  tables are missing), and reports the tablebase score unless it finds a
+  mate.
+- In the search, positions in the tables right after a capture or pawn move
+  (and without castling rights) take their result from the WDL tables.
+- `SyzygyProbeLimit` (default 7) caps the number of pieces probed,
+  `SyzygyProbeDepth` (default 1) is the least depth at which positions with
+  exactly that many pieces are probed, and `Syzygy50MoveRule` (default true)
+  scores wins and losses that the fifty-move rule turns into draws as
+  draws. `info` lines report `tbhits`.
+

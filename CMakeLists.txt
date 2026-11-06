@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.3)
 
-project(AetherZ VERSION 0.1.0 LANGUAGES CXX)
+project(AetherZ VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +43,14 @@ add_executable(aetherz
     src/main.cpp
 )
 
+# Syzygy tablebase probing (third_party/fathom, MIT), a C library.
+add_library(fathom STATIC third_party/fathom/tbprobe.c)
+set_target_properties(fathom PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(fathom PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fathom)
+if(NOT MSVC)
+    target_compile_options(fathom PRIVATE -O3 -w)
+endif()
+
 add_library(aetherz_engine
     src/engine/attacks.cpp
     src/engine/benchmark.cpp
@@ -57,6 +65,7 @@ add_library(aetherz_engine
     src/engine/perft.cpp
     src/engine/search.cpp
     src/engine/see.cpp
+    src/engine/syzygy.cpp
     src/engine/thread.cpp
     src/engine/types.cpp
     src/engine/uci.cpp
@@ -112,6 +121,7 @@ message(STATUS "NNUE hidden size: ${aetherz_nnue_hidden}")
 
 find_package(Threads REQUIRED)
 target_link_libraries(aetherz_engine PUBLIC Threads::Threads)
+target_link_libraries(aetherz_engine PRIVATE fathom)
 
 # MSVC (and clang-cl) already optimize Release builds with /O2 and have no
 # native-CPU switch; the optimization flags below are for GCC and Clang,

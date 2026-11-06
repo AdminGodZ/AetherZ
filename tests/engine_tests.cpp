@@ -8,6 +8,7 @@
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
 #include "engine/see.hpp"
+#include "engine/syzygy.hpp"
 #include "engine/thread.hpp"
 #include "engine/types.hpp"
 #include "engine/uci.hpp"
@@ -1154,6 +1155,72 @@ void test_uci_ignores_a_byte_order_mark()
     require(output.str().find("uciok") != std::string::npos, "UCI answers a first command after a byte order mark");
 }
 
+void test_syzygy_without_tables()
+{
+    require(aetherz::syzygy::init(""), "unloading Syzygy tables succeeds");
+    require(aetherz::syzygy::max_pieces() == 0, "no Syzygy tables are loaded by default");
+    const auto board = *aetherz::Board::from_fen("8/8/8/4k3/8/8/8/4KQ2 w - - 0 1");
+    require(!aetherz::syzygy::probe_wdl(board), "WDL probes fail without tables");
+    require(!aetherz::syzygy::probe_root(board, false, true), "root probes fail without tables");
+
+    std::istringstream input{"uci\nsetoption name SyzygyPath value <empty>\nposition fen 8/8/8/4k3/8/8/8/4KQ2 w - - 0 1\ngo depth 6\nquit\n"};
+    std::ostringstream output;
+    aetherz::UciEngine engine;
+    engine.loop(input, output);
+    require(output.str().find("option name SyzygyPath type string default <empty>") != std::string::npos, "UCI offers SyzygyPath");
+    require(output.str().find("tbhits 0") != std::string::npos, "UCI reports tbhits");
+}
+
+// Needs Syzygy tables with at least KQvK, KRvK and KPvK (WDL and DTZ) in the
+// folder named by AETHERZ_SYZYGY_PATH; skipped without it.
+void test_syzygy_with_tables()
+{
+    const char* path = std::getenv("AETHERZ_SYZYGY_PATH");
+    if (path == nullptr || *path == '\0') {
+        std::cout << "skipping Syzygy table tests: AETHERZ_SYZYGY_PATH is not set\n";
+        return;
+    }
+    require(aetherz::syzygy::init(path) && aetherz::syzygy::max_pieces() >= 3, "Syzygy tables load");
+
+    using aetherz::syzygy::Wdl;
+    const auto won = *aetherz::Board::from_fen("8/8/8/4k3/8/8/8/4KQ2 w - - 0 1");
+    require(aetherz::syzygy::probe_wdl(won) == Wdl::Win, "KQvK is a win for the side with the queen");
+    const auto lost = *aetherz::Board::from_fen("8/8/8/4k3/8/8/8/4KQ2 b - - 0 1");
+    require(aetherz::syzygy::probe_wdl(lost) == Wdl::Loss, "KQvK is a loss for the lone king");
+    const auto drawn = *aetherz::Board::from_fen("8/8/8/8/8/k7/p7/K7 w - - 0 1");
+    require(aetherz::syzygy::probe_wdl(drawn) == Wdl::Draw, "a blocked rook pawn is a draw");
+    const auto clocked = *aetherz::Board::from_fen("8/8/8/4k3/8/8/8/4KQ2 w - - 7 40");
+    require(!aetherz::syzygy::probe_wdl(clocked), "WDL probes need a zero halfmove clock");
+
+    // KPvK: only moves that keep the win are ranked best, and every move is ranked.
+    auto board = *aetherz::Board::from_fen("8/5k2/8/3KP3/8/8/8/8 w - - 0 1");
+    const auto probe = aetherz::syzygy::probe_root(board, false, true);
+    require(probe && probe->dtz, "KPvK root moves are ranked with DTZ");
+    require(probe->moves.size() == board.generate_legal_moves().size(), "every root move is ranked");
+    for (const auto& root_move : probe->moves) {
+        auto next = board;
+        aetherz::Board::UndoState undo;
+        require(next.make_move(root_move.move, undo), "ranked root moves are legal");
+        const bool keeps_win = root_move.rank == probe->moves.front().rank;
+        const auto reply = aetherz::syzygy::probe_root(next, false, true);
+        const bool opponent_loses = reply && reply->moves.front().score < 0;
+        require(keeps_win == opponent_loses, "best-ranked root moves are exactly the winning ones");
+    }
+
+    // The search plays a winning move and reports the tablebase win.
+    aetherz::Search search;
+    const auto result = search.find_best_move(board, 8);
+    require(result.best_move.has_value(), "the search returns a move in a tablebase position");
+    auto next = board;
+    aetherz::Board::UndoState undo;
+    require(next.make_move(*result.best_move, undo), "the tablebase move is legal");
+    const auto reply = aetherz::syzygy::probe_root(next, false, true);
+    require(reply && reply->moves.front().score < 0, "the search keeps the tablebase win");
+    require(result.score >= aetherz::tb_win_score - aetherz::max_search_ply, "a won tablebase root reports a tablebase or mate score");
+
+    require(aetherz::syzygy::init(""), "Syzygy tables unload");
+}
+
 void test_uci_depth_search_finishes_at_end_of_input()
 {
     std::istringstream input{
@@ -1495,6 +1562,8 @@ int main()
     test_uci_infinite_search_waits_for_stop();
     test_search_stopped_at_once_returns_a_legal_move();
     test_uci_ignores_a_byte_order_mark();
+    test_syzygy_without_tables();
+    test_syzygy_with_tables();
     test_uci_depth_search_finishes_at_end_of_input();
     test_uci_reports_mate_scores();
     test_uci_ponder_waits_for_ponderhit();
