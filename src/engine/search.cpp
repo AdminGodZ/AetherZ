@@ -18,6 +18,7 @@ namespace {
 
 constexpr int infinity = 32000;
 constexpr int initial_aspiration_window = 35;
+constexpr int qsearch_delta_margin = 200;
 
 std::int64_t deadline_after(std::chrono::milliseconds duration)
 {
@@ -1033,6 +1034,12 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         }
 
         if (!in_check && is_capture_like(move) && moves.see() < 0) {
+            continue;
+        }
+        // Delta pruning: a capture that leaves the score short of alpha even
+        // after winning its exchange and a margin is not worth searching.
+        if (!in_check && move.flag != MoveFlag::PromotionCapture && is_capture_like(move)
+            && best + moves.see() + qsearch_delta_margin <= alpha) {
             continue;
         }
 
