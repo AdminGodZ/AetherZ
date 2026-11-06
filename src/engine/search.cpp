@@ -2,6 +2,7 @@
 
 #include "engine/evaluate.hpp"
 #include "engine/see.hpp"
+#include "engine/syzygy.hpp"
 #include "engine/thread.hpp"
 
 #include <algorithm>
@@ -327,6 +328,79 @@ std::uint64_t Search::total_nodes() const
     return total;
 }
 
+std::uint64_t Search::total_tb_hits() const
+{
+    std::uint64_t total = tb_hits_.load(std::memory_order_relaxed);
+    for (const auto& helper : helpers_) {
+        total += helper->tb_hits_.load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+void Search::set_syzygy_options(const SyzygyOptions& options)
+{
+    syzygy_options_ = options;
+}
+
+void Search::prepare_tablebases(const Board& board)
+{
+    tb_root_moves_.clear();
+    tb_root_score_.reset();
+    tb_cardinality_ = std::min(syzygy_options_.probe_limit, syzygy::max_pieces());
+    tb_probe_depth_ = syzygy_options_.probe_depth;
+    // With a probe limit above the largest tables, all of them are probed
+    // at any depth.
+    if (syzygy_options_.probe_limit > syzygy::max_pieces()) {
+        tb_probe_depth_ = 0;
+    }
+
+    // In a root position in the tables only the moves that keep its best
+    // result are searched. With DTZ tables these also make progress, so the
+    // search does not probe; with only WDL tables it probes while winning,
+    // to find the way to convert.
+    if (tb_cardinality_ > 0 && std::popcount(board.occupancy()) <= tb_cardinality_) {
+        if (const auto probe = syzygy::probe_root(board, position_repeated(board), syzygy_options_.use_rule50)) {
+            const syzygy::RootMove& best = probe->moves.front();
+            for (const syzygy::RootMove& root_move : probe->moves) {
+                if (root_move.rank == best.rank) {
+                    tb_root_moves_.push_back(root_move.move);
+                }
+            }
+            tb_root_score_ = best.score;
+            if (probe->dtz || best.score <= 0) {
+                tb_cardinality_ = 0;
+            }
+        }
+    }
+
+    for (const auto& helper : helpers_) {
+        helper->tb_cardinality_ = tb_cardinality_;
+        helper->tb_probe_depth_ = tb_probe_depth_;
+        helper->tb_root_moves_ = tb_root_moves_;
+        helper->syzygy_options_ = syzygy_options_;
+    }
+}
+
+bool Search::position_repeated(const Board& board) const
+{
+    const auto window = std::min<std::size_t>(position_history_.size(), static_cast<std::size_t>(board.halfmove_clock()) + 1);
+    const auto first = position_history_.end() - static_cast<std::ptrdiff_t>(window);
+    for (auto position = first; position != position_history_.end(); ++position) {
+        if (std::find(position + 1, position_history_.end(), *position) != position_history_.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+SearchResult Search::reported(SearchResult result) const
+{
+    if (tb_root_score_ && std::abs(result.score) < mate_bound) {
+        result.score = *tb_root_score_;
+    }
+    return result;
+}
+
 SearchResult Search::find_best_move(Board& board, int depth)
 {
     SearchLimits limits;
@@ -347,6 +421,10 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     clear_killers();
     reset_position_history(board, limits);
     refresh_nnue(board);
+    tb_hits_.store(0, std::memory_order_relaxed);
+    if (!helper_) {
+        prepare_tablebases(board);
+    }
     if (limits.on_search_started) {
         limits.on_search_started();
     }
@@ -389,6 +467,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
             iteration.seldepth = std::max(seldepth_, depth);
             iteration.nodes = total_nodes();
             iteration.tt_hits = tt_hits_;
+            iteration.tb_hits = total_tb_hits();
 
             if (stop_ || depth == 1 || (iteration.score > alpha && iteration.score < beta)) {
                 break;
@@ -431,7 +510,7 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
             previous_score = iteration.score;
             best_completed = iteration;
             if (limits.on_depth_finished) {
-                limits.on_depth_finished(best_completed);
+                limits.on_depth_finished(reported(best_completed));
             }
         }
 
@@ -447,7 +526,8 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
 
     best_completed.nodes = total_nodes();
     best_completed.tt_hits = tt_hits_;
-    return best_completed;
+    best_completed.tb_hits = total_tb_hits();
+    return reported(best_completed);
 }
 
 void Search::request_stop()
@@ -555,7 +635,12 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
     MovePicker picker = ordered_moves(board, entry ? std::optional<Move>{entry->best_move} : std::nullopt, 0);
     MoveList moves;
     while (const auto move = picker.next()) {
-        moves.push_back(*move);
+        // A root in the tablebases searches only the moves keeping its result.
+        if (tb_root_moves_.empty() || std::ranges::any_of(tb_root_moves_, [&](const Move& kept) {
+                return same_move(kept, *move);
+            })) {
+            moves.push_back(*move);
+        }
     }
     if (moves.empty()) {
         result.nodes = total_nodes();
@@ -763,6 +848,31 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
             }
             if (alpha >= beta) {
                 return table_score;
+            }
+        }
+    }
+
+    // Tablebases: an exact result, or a bound that is good enough, ends the
+    // search here, as in Stockfish.
+    if (ply > 0 && !singular_search && tb_cardinality_ > 0) {
+        const int pieces = std::popcount(board.occupancy());
+        if (pieces <= tb_cardinality_
+            && (pieces < tb_cardinality_ || depth >= tb_probe_depth_)
+            && board.halfmove_clock() == 0
+            && board.castling_rights() == 0) {
+            if (const auto wdl = syzygy::probe_wdl(board)) {
+                tb_hits_.fetch_add(1, std::memory_order_relaxed);
+                // With the fifty-move rule, cursed wins and blessed losses
+                // are draws, scored just above and below 0.
+                const int draw_score = syzygy_options_.use_rule50 ? 1 : 0;
+                const int result = static_cast<int>(*wdl);
+                const int tb_value = tb_win_score - ply;
+                const int value = result < -draw_score ? -tb_value : (result > draw_score ? tb_value : 2 * result * draw_score);
+                const Bound bound = result < -draw_score ? Bound::Upper : (result > draw_score ? Bound::Lower : Bound::Exact);
+                if (bound == Bound::Exact || (bound == Bound::Lower ? value >= beta : value <= alpha)) {
+                    table_->store(board.hash(), std::min(depth + 6, max_search_depth), score_to_table(value, ply), tt_no_eval, bound, Move{});
+                    return value;
+                }
             }
         }
     }

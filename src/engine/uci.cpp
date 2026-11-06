@@ -3,6 +3,7 @@
 #include "engine/benchmark.hpp"
 #include "engine/perft.hpp"
 #include "engine/search.hpp"
+#include "engine/syzygy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -115,6 +116,7 @@ std::string format_search_info(const SearchResult& result, int hashfull, std::ch
            << " nodes " << result.nodes
            << " nps " << (result.nodes * 1000 / static_cast<std::uint64_t>(elapsed_ms))
            << " hashfull " << hashfull
+           << " tbhits " << result.tb_hits
            << " time " << elapsed_ms;
 
     if (!result.principal_variation.empty()) {
@@ -197,7 +199,11 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
                 "option name Move Overhead type spin default 30 min 0 max 5000\n"
                 "option name Ponder type check default false\n"
                 "option name Clear Hash type button\n"
-                "option name UseNNUE type check default true\n");
+                "option name UseNNUE type check default true\n"
+                "option name SyzygyPath type string default <empty>\n"
+                "option name SyzygyProbeDepth type spin default 1 min 1 max 100\n"
+                "option name Syzygy50MoveRule type check default true\n"
+                "option name SyzygyProbeLimit type spin default 7 min 0 max 7\n");
             write(nnue::embedded_network().empty()
                     ? std::string{"option name EvalFile type string default\n"}
                     : "option name EvalFile type string default " + std::string{nnue::embedded_network_name} + "\n");
@@ -349,6 +355,31 @@ void UciEngine::handle_setoption(const std::vector<std::string>& tokens)
         const auto parsed = parse_bool(value);
         if (parsed) {
             search_.set_use_nnue(*parsed);
+        }
+    } else if (name == "SyzygyPath") {
+        if (!syzygy::init(value)) {
+            write("info string failed to load Syzygy tablebases from " + value + "\n");
+        } else if (syzygy::max_pieces() > 0) {
+            write("info string found Syzygy tablebases with up to " + std::to_string(syzygy::max_pieces()) + " pieces\n");
+        } else if (!value.empty() && value != "<empty>") {
+            write("info string no Syzygy tablebases found in " + value + "\n");
+        }
+    } else if (name == "SyzygyProbeDepth" && !value.empty()) {
+        try {
+            syzygy_options_.probe_depth = std::clamp(std::stoi(value), 1, 100);
+            search_.set_syzygy_options(syzygy_options_);
+        } catch (...) {
+        }
+    } else if (name == "SyzygyProbeLimit" && !value.empty()) {
+        try {
+            syzygy_options_.probe_limit = std::clamp(std::stoi(value), 0, 7);
+            search_.set_syzygy_options(syzygy_options_);
+        } catch (...) {
+        }
+    } else if (name == "Syzygy50MoveRule" && !value.empty()) {
+        if (const auto parsed = parse_bool(value)) {
+            syzygy_options_.use_rule50 = *parsed;
+            search_.set_syzygy_options(syzygy_options_);
         }
     } else if (name == "EvalFile") {
         if (value.empty()) {

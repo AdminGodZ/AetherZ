@@ -21,6 +21,8 @@ inline constexpr int max_search_ply = 128;
 inline constexpr int max_search_depth = max_search_ply - 8;
 inline constexpr int mate_score = 30000;
 inline constexpr int mate_bound = mate_score - max_search_ply;
+// Tablebase wins score tb_win_score - ply: below mates, above any evaluation.
+inline constexpr int tb_win_score = mate_bound - 1;
 static_assert(nnue::accumulator_stack_size >= max_search_ply + 8, "every search ply has an NNUE accumulator");
 
 // Moves until mate for a mate score (negative when getting mated), or 0 when
@@ -43,6 +45,7 @@ struct SearchResult {
     int seldepth = 0;
     std::uint64_t nodes = 0;
     std::uint64_t tt_hits = 0;
+    std::uint64_t tb_hits = 0;
     std::vector<Move> principal_variation;
 };
 
@@ -200,6 +203,17 @@ public:
     [[nodiscard]] bool nnue_loaded() const;
     [[nodiscard]] std::string nnue_eval_file() const;
 
+    // Syzygy settings, as in Stockfish: the tables are probed in positions
+    // with at most probe_limit pieces, and with exactly probe_limit pieces
+    // only from probe_depth on. The tables themselves are loaded with
+    // syzygy::init().
+    struct SyzygyOptions {
+        int probe_depth = 1;
+        int probe_limit = 7;
+        bool use_rule50 = true;
+    };
+    void set_syzygy_options(const SyzygyOptions& options);
+
 private:
     enum class MoveGeneration {
         All,
@@ -221,6 +235,15 @@ private:
     // Written only by the owning thread; atomic so other threads can read it.
     std::atomic<std::uint64_t> nodes_ = 0;
     std::uint64_t tt_hits_ = 0;
+    std::atomic<std::uint64_t> tb_hits_ = 0;
+    SyzygyOptions syzygy_options_;
+    // Set for each search by the main thread: positions with at most
+    // tb_cardinality_ pieces are probed (0: none), and when the root is in
+    // the tables only tb_root_moves_ are searched.
+    int tb_cardinality_ = 0;
+    int tb_probe_depth_ = 1;
+    std::vector<Move> tb_root_moves_;
+    std::optional<int> tb_root_score_;
     int seldepth_ = 0;
     std::atomic<bool> stop_ = false;
     // Deadlines as steady_clock ticks; zero means no deadline.
@@ -246,6 +269,13 @@ private:
     void count_node() { nodes_.store(nodes_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); }
     [[nodiscard]] std::uint64_t node_count() const { return nodes_.load(std::memory_order_relaxed); }
     [[nodiscard]] std::uint64_t total_nodes() const;
+    [[nodiscard]] std::uint64_t total_tb_hits() const;
+    // Sets up tablebase probing for a search from board (main thread only).
+    void prepare_tablebases(const Board& board);
+    [[nodiscard]] bool position_repeated(const Board& board) const;
+    // The result reported to the GUI: a tablebase root keeps its tablebase
+    // score unless the search found a mate.
+    [[nodiscard]] SearchResult reported(SearchResult result) const;
     [[nodiscard]] SearchResult search_depth(Board& board, int depth, int alpha, int beta);
     [[nodiscard]] std::vector<Move> principal_variation(Board board, int depth) const;
     [[nodiscard]] int negamax(

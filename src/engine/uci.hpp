@@ -44,6 +44,7 @@ private:
     Search search_;
     std::vector<std::uint64_t> position_history_{Board::startpos().hash()};
     int move_overhead_ms_ = 30;
+    Search::SyzygyOptions syzygy_options_;
 
     std::ostream* output_ = nullptr;
     std::mutex output_mutex_;
