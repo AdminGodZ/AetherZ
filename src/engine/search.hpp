@@ -43,6 +43,10 @@ struct SearchResult {
     int seldepth = 0;
     std::uint64_t nodes = 0;
     std::uint64_t tt_hits = 0;
+    // This thread's nodes for the iteration's last root search, and the share
+    // of them spent below the best move; used for time management.
+    std::uint64_t root_nodes = 0;
+    std::uint64_t best_move_nodes = 0;
     std::vector<Move> principal_variation;
 };
 

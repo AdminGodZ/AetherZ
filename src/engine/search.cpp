@@ -426,6 +426,14 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
                 if (iteration.score < previous_score - 30) {
                     time_scale *= 1.2;
                 }
+                // The larger the share of the search spent on the best move,
+                // the clearer the choice: from 0.675x when all of it to about
+                // 2x when none of it was (about 1x at the usual share of 0.75).
+                if (iteration.root_nodes > 0) {
+                    const double best_share = static_cast<double>(iteration.best_move_nodes)
+                        / static_cast<double>(iteration.root_nodes);
+                    time_scale *= (1.5 - best_share) * 1.35;
+                }
             }
 
             previous_score = iteration.score;
@@ -593,6 +601,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
         const Move& move = moves[index];
         const int see_gain = is_capture_like(move) ? static_exchange_evaluation(board, move) : 0;
+        const std::uint64_t nodes_before = node_count();
         Board::UndoState undo;
         if (!make_legal_move(board, move, undo)) {
             continue;
@@ -616,11 +625,14 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
         pop_position();
         board.unmake_move(undo);
         searched_move = true;
+        const std::uint64_t move_nodes = node_count() - nodes_before;
+        result.root_nodes += move_nodes;
 
         if (!result.best_move || score > best_score) {
             best_score = score;
             result.best_move = move;
             result.score = score;
+            result.best_move_nodes = move_nodes;
         }
 
         alpha = std::max(alpha, score);
