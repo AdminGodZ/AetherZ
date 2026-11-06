@@ -107,6 +107,12 @@ sees each position a handful of times (`610` x 16384 x 40 is about 400M
 positions, about 10 passes over 40M positions), and add data before adding
 superbatches.
 
+## Networks
+
+| File | Data | Training | Result |
+|---|---|---|---|
+| `networks/aetherz-v1-w30.bin` | 39.1M positions, 430k classical self-play games at 5000 nodes (seed 1) | 40 superbatches x 610 batches x 16384, WDL 0.3, cosine LR 0.001 -> 8.1e-6 | +330 Elo [255, 443] vs classical, 100 games at 8+0.08 (WDL 0.75: +118) |
+
 ## Using a network
 
 Each checkpoint contains `quantised.bin`: the raw little-endian int16
@@ -116,8 +122,9 @@ weights with no header, padded to a multiple of 64 bytes. Load it as is:
 setoption name EvalFile value checkpoints/simple-40/quantised.bin
 ```
 
-To ship a network inside the executable, configure with
-`-DAETHERZ_EVALFILE=path/to/quantised.bin`. The engine then loads it at
+The engine is built with a network inside the executable: by default
+`networks/aetherz-v1-w30.bin`, or the one given with
+`-DAETHERZ_EVALFILE=path/to/quantised.bin` (empty for none). It loads it at
 start-up (`EvalFile` defaults to `<embedded>`, and `bench` uses it, so the
 bench node count differs from builds without a network); setting `EvalFile`
 to a file still replaces it, and `setoption name EvalFile value <embedded>`

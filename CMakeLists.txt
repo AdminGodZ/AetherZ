@@ -13,7 +13,10 @@ endif()
 
 option(AETHERZ_NATIVE "Optimize for the host CPU" ON)
 option(AETHERZ_LTO "Enable link-time optimization" ON)
-set(AETHERZ_EVALFILE "" CACHE FILEPATH "Bullet quantised.bin to build into the engine as its default network")
+# The network the engine plays with unless EvalFile says otherwise. Configure
+# with -DAETHERZ_EVALFILE= for an engine that uses the classical evaluation.
+set(AETHERZ_EVALFILE "${CMAKE_CURRENT_SOURCE_DIR}/networks/aetherz-v1-w30.bin" CACHE FILEPATH
+    "Bullet quantised.bin to build into the engine as its default network")
 
 if(AETHERZ_LTO)
     include(CheckIPOSupported)

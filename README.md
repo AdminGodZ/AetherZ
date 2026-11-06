@@ -14,6 +14,12 @@ The default build type is `Release` with `-O3`, link-time optimization and
 portable binary and `-DCMAKE_BUILD_TYPE=Debug` when debugging. Always measure
 and play with a Release build: a Debug build is many times slower.
 
+The engine evaluates positions with an NNUE network built into the
+executable, `networks/aetherz-v1-w30.bin` by default (see
+[tools/nnue](tools/nnue/README.md) for how networks are trained). Configure
+with `-DAETHERZ_EVALFILE=` for an engine that uses the classical evaluation,
+or point it at another network file.
+
 ## Run
 
 ```bash
@@ -48,6 +54,8 @@ ctest --test-dir build --output-on-failure
 signature of the search: a change that is only meant to make the engine faster
 must keep it identical, while any change to search or evaluation behaviour
 changes it. Mention the bench node count in every commit that touches search.
+The count depends on the built-in network; with no network (`-DAETHERZ_EVALFILE=`)
+it is the classical evaluation's.
 
 ## Testing Changes With Matches
 
