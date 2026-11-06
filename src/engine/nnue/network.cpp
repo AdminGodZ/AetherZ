@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace aetherz::nnue {
@@ -67,6 +69,58 @@ std::uint32_t screlu_dot_small_weights(const std::int16_t* accumulator, const st
     return sum;
 }
 
+// Whether a network file of this size has this architecture, allowing for
+// Bullet's padding.
+bool check_size(std::size_t size, const std::string& name, std::string* error)
+{
+    if (size < network_file_size) {
+        assign_error(error, name + " is " + std::to_string(size) + " bytes, but a " + architecture_name(hidden_size)
+            + " network needs " + std::to_string(network_file_size) + " bytes");
+        return false;
+    }
+    if (size - network_file_size > max_file_padding) {
+        std::string message = name + " is " + std::to_string(size) + " bytes, more than the "
+            + std::to_string(network_file_size) + " bytes of a " + architecture_name(hidden_size)
+            + " network plus at most 63 bytes of padding";
+        if (const std::size_t hidden = guess_hidden_size(size); hidden != 0) {
+            message += "; it looks like a " + architecture_name(static_cast<int>(hidden)) + " network";
+        }
+        assign_error(error, std::move(message));
+        return false;
+    }
+    return true;
+}
+
+// Decodes the first network_file_size bytes. Decoded explicitly so that the
+// little-endian file also loads on big-endian hosts.
+std::unique_ptr<Network> decode(std::span<const unsigned char> bytes)
+{
+    std::size_t offset = 0;
+    const auto next = [&] {
+        const auto value = static_cast<std::uint16_t>(bytes[offset] | (bytes[offset + 1] << 8));
+        offset += 2;
+        return static_cast<std::int16_t>(value);
+    };
+
+    auto network = std::make_unique<Network>();
+    for (Accumulator& column : network->feature_weights) {
+        for (std::int16_t& weight : column.values) {
+            weight = next();
+        }
+    }
+    for (std::int16_t& bias : network->feature_bias.values) {
+        bias = next();
+    }
+    for (std::int16_t& weight : network->output_weights) {
+        weight = next();
+    }
+    network->output_bias = next();
+    network->small_output_weights = std::ranges::all_of(network->output_weights, [](std::int16_t weight) {
+        return std::abs(weight) <= 128;
+    });
+    return network;
+}
+
 } // namespace
 
 int Network::evaluate(const Accumulator& us, const Accumulator& them) const
@@ -99,21 +153,7 @@ std::unique_ptr<Network> load_network(std::string_view path_view, std::string* e
         assign_error(error, "could not read " + path);
         return nullptr;
     }
-
-    const auto size = static_cast<std::size_t>(end);
-    if (size < network_file_size) {
-        assign_error(error, path + " is " + std::to_string(size) + " bytes, but a " + architecture_name(hidden_size)
-            + " network needs " + std::to_string(network_file_size) + " bytes");
-        return nullptr;
-    }
-    if (size - network_file_size > max_file_padding) {
-        std::string message = path + " is " + std::to_string(size) + " bytes, more than the "
-            + std::to_string(network_file_size) + " bytes of a " + architecture_name(hidden_size)
-            + " network plus at most 63 bytes of padding";
-        if (const std::size_t hidden = guess_hidden_size(size); hidden != 0) {
-            message += "; it looks like a " + architecture_name(static_cast<int>(hidden)) + " network";
-        }
-        assign_error(error, std::move(message));
+    if (!check_size(static_cast<std::size_t>(end), path, error)) {
         return nullptr;
     }
 
@@ -123,33 +163,15 @@ std::unique_ptr<Network> load_network(std::string_view path_view, std::string* e
         assign_error(error, "could not read " + path);
         return nullptr;
     }
+    return decode(bytes);
+}
 
-    // Decoded explicitly so that the little-endian file also loads on
-    // big-endian hosts.
-    std::size_t offset = 0;
-    const auto next = [&] {
-        const auto value = static_cast<std::uint16_t>(bytes[offset] | (bytes[offset + 1] << 8));
-        offset += 2;
-        return static_cast<std::int16_t>(value);
-    };
-
-    auto network = std::make_unique<Network>();
-    for (Accumulator& column : network->feature_weights) {
-        for (std::int16_t& weight : column.values) {
-            weight = next();
-        }
+std::unique_ptr<Network> parse_network(std::span<const unsigned char> bytes, std::string_view name, std::string* error)
+{
+    if (!check_size(bytes.size(), std::string{name}, error)) {
+        return nullptr;
     }
-    for (std::int16_t& bias : network->feature_bias.values) {
-        bias = next();
-    }
-    for (std::int16_t& weight : network->output_weights) {
-        weight = next();
-    }
-    network->output_bias = next();
-    network->small_output_weights = std::ranges::all_of(network->output_weights, [](std::int16_t weight) {
-        return std::abs(weight) <= 128;
-    });
-    return network;
+    return decode(bytes);
 }
 
 } // namespace aetherz::nnue

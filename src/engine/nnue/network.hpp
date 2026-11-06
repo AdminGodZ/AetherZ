@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -45,5 +46,13 @@ struct Network {
 // Returns nullptr (and sets error) if the file is missing or has the wrong
 // size for this architecture.
 [[nodiscard]] std::unique_ptr<Network> load_network(std::string_view path, std::string* error = nullptr);
+// The same for the contents of a network file; name is used in errors.
+[[nodiscard]] std::unique_ptr<Network> parse_network(
+    std::span<const unsigned char> bytes, std::string_view name, std::string* error = nullptr);
+
+// The network built into the engine (CMake option AETHERZ_EVALFILE), or an
+// empty span. Loading the EvalFile embedded_network_name selects it.
+[[nodiscard]] std::span<const unsigned char> embedded_network();
+inline constexpr std::string_view embedded_network_name = "<embedded>";
 
 } // namespace aetherz::nnue

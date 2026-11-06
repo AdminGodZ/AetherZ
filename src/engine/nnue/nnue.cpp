@@ -44,7 +44,16 @@ void apply_feature(Accumulator& accumulator, const std::int16_t* weights)
 
 bool NnueEvaluator::load(std::string_view path, std::string* error)
 {
-    auto network = load_network(path, error);
+    std::unique_ptr<Network> network;
+    if (path != embedded_network_name) {
+        network = load_network(path, error);
+    } else if (embedded_network().empty()) {
+        if (error != nullptr) {
+            *error = "no network is built into this engine (CMake option AETHERZ_EVALFILE)";
+        }
+    } else {
+        network = parse_network(embedded_network(), path, error);
+    }
     if (!network) {
         clear();
         return false;
