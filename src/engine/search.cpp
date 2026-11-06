@@ -798,7 +798,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         MovePicker probcut_moves = ordered_moves(board, tt_move, ply, previous_move, MoveGeneration::Tactical);
         while (const auto next_move = probcut_moves.next()) {
             const Move& move = *next_move;
-            if (is_capture_like(move) && static_exchange_evaluation(board, move) < 0) {
+            if (is_capture_like(move) && probcut_moves.see() < 0) {
                 continue;
             }
 
@@ -863,7 +863,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         // Prune before making the move: cheaper than making and unmaking it.
         const bool gives_check = board.gives_check(move);
         const bool capture = is_capture_like(move);
-        const int see_gain = capture ? static_exchange_evaluation(board, move) : 0;
+        const int see_gain = moves.see();
         const int move_index = searched_moves + 1;
         if (searched_move && !in_check && best > -mate_bound) {
             if (is_quiet(move)
@@ -1032,7 +1032,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
             break;
         }
 
-        if (!in_check && is_capture_like(move) && static_exchange_evaluation(board, move) < 0) {
+        if (!in_check && is_capture_like(move) && moves.see() < 0) {
             continue;
         }
 
@@ -1126,32 +1126,31 @@ std::optional<Move> MovePicker::next()
         return std::nullopt;
     }
 
-    // Stage first, then score, then the move itself so the order does not
-    // depend on the order in which moves were generated.
-    auto better = [](const ScoredMove& left, const ScoredMove& right) {
-        if (left.stage != right.stage) {
-            return left.stage < right.stage;
-        }
-        if (left.score != right.score) {
-            return left.score > right.score;
-        }
-        return left.key < right.key;
-    };
+    auto better = [](const OrderedMove& left, const OrderedMove& right) { return left.order < right.order; };
 
+    auto& moves = moves_.values;
     // The first move often causes a cutoff, so only select it; sort the rest
     // once a second move is actually needed.
     if (index_ == 0) {
         std::size_t best = 0;
         for (std::size_t index = 1; index < count_; ++index) {
-            if (better(moves_[index], moves_[best])) {
+            if (better(moves[index], moves[best])) {
                 best = index;
             }
         }
-        std::swap(moves_[0], moves_[best]);
+        std::swap(moves[0], moves[best]);
     } else if (index_ == 1) {
-        std::sort(moves_.begin() + 1, moves_.begin() + static_cast<std::ptrdiff_t>(count_), better);
+        // Insertion sort: lists are short, and it beats std::sort on them.
+        for (std::size_t index = 2; index < count_; ++index) {
+            const OrderedMove move = moves[index];
+            std::size_t slot = index;
+            for (; slot > 1 && better(move, moves[slot - 1]); --slot) {
+                moves[slot] = moves[slot - 1];
+            }
+            moves[slot] = move;
+        }
     }
-    return moves_[index_++].move;
+    return moves[index_++].move;
 }
 
 MovePicker Search::ordered_moves(
@@ -1177,6 +1176,11 @@ MovePicker Search::ordered_moves(
     MovePicker picker;
     for (const Move& move : moves) {
         MovePicker::ScoredMove entry{.move = move, .stage = Quiets, .score = 0, .key = move_key(move)};
+        // The search needs the SEE of every capture it reaches, so work it
+        // out once here.
+        if (is_capture_like(move)) {
+            entry.see = static_exchange_evaluation(board, move);
+        }
 
         if (tt_move && same_move(move, *tt_move)) {
             entry.stage = TtMove;
@@ -1187,9 +1191,8 @@ MovePicker Search::ordered_moves(
                 entry.score += capture_score(board, move);
             }
         } else if (is_capture_like(move)) {
-            const int see = static_exchange_evaluation(board, move);
-            entry.stage = see >= 0 ? GoodCaptures : BadCaptures;
-            entry.score = see * 8 + capture_score(board, move);
+            entry.stage = entry.see >= 0 ? GoodCaptures : BadCaptures;
+            entry.score = entry.see * 8 + capture_score(board, move);
         } else {
             int score = 0;
             if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {

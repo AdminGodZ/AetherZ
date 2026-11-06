@@ -130,15 +130,39 @@ public:
         int stage = 0;
         int score = 0;
         int key = 0;
+        int see = 0;
     };
 
-    void add(const ScoredMove& move) { moves_[count_++] = move; }
+    // Moves come out by stage, then by score (highest first), then by key
+    // (lowest first) so the order does not depend on the generation order.
+    void add(const ScoredMove& move)
+    {
+        moves_.values[count_++] = {.order = sort_order(move), .move = move.move, .see = move.see};
+    }
     [[nodiscard]] std::size_t size() const { return count_; }
     [[nodiscard]] bool empty() const { return count_ == 0; }
     [[nodiscard]] std::optional<Move> next();
+    // Static exchange evaluation of the move next() returned last (0 unless
+    // it captures).
+    [[nodiscard]] int see() const { return moves_.values[index_ - 1].see; }
 
 private:
-    std::array<ScoredMove, MoveList::capacity> moves_;
+    struct OrderedMove {
+        std::uint64_t order;
+        Move move;
+        int see;
+    };
+
+    // Stage, score and key packed into one number that sorts the same way:
+    // a stage below 2^16, a score that fits in 32 bits, a key below 2^15.
+    [[nodiscard]] static std::uint64_t sort_order(const ScoredMove& move)
+    {
+        const auto inverted_score = static_cast<std::uint64_t>(std::int64_t{INT32_MAX} - move.score);
+        return (static_cast<std::uint64_t>(move.stage) << 48) | (inverted_score << 15)
+            | static_cast<std::uint64_t>(move.key);
+    }
+
+    UninitializedArray<OrderedMove, MoveList::capacity> moves_;
     std::size_t count_ = 0;
     std::size_t index_ = 0;
 };
