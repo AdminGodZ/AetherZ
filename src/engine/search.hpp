@@ -325,7 +325,7 @@ private:
     [[nodiscard]] bool can_use_nnue() const;
     void clear_killers();
     void record_cutoff(const Move& move, int depth, int ply, Move previous_move, const MoveList& quiets_tried);
-    void update_correction_history(const Board& board, int depth, int search_score);
+    void update_correction_history(const Board& board, int depth, int search_score, int raw_eval);
 };
 
 [[nodiscard]] std::string pv_to_string(const std::vector<Move>& moves);

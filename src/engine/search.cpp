@@ -649,7 +649,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
         table_->store(board.hash(), depth, score_to_table(result.score, 0), tt_no_eval, bound, *result.best_move);
         if (bound == Bound::Exact && !in_check) {
-            update_correction_history(board, depth, result.score);
+            update_correction_history(board, depth, result.score, raw_evaluate(board));
         }
         result.principal_variation = principal_variation(board, depth);
     }
@@ -975,8 +975,14 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
 
         table_->store(board.hash(), depth, score_to_table(best, ply), raw_eval, bound, best_move);
-        if (bound == Bound::Exact && !in_check) {
-            update_correction_history(board, depth, best);
+        // Learn from bounds too, when they show the evaluation was off in
+        // their direction. A capture as best move says little about the
+        // evaluation of the position itself.
+        if (!in_check && !is_tactical(best_move) && raw_eval != tt_no_eval) {
+            const int eval = corrected_eval(board, raw_eval);
+            if (bound == Bound::Exact || (bound == Bound::Lower && best > eval) || (bound == Bound::Upper && best < eval)) {
+                update_correction_history(board, depth, best, raw_eval);
+            }
         }
     }
 
@@ -1541,13 +1547,13 @@ void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_m
     }
 }
 
-void Search::update_correction_history(const Board& board, int depth, int search_score)
+void Search::update_correction_history(const Board& board, int depth, int search_score, int raw_eval)
 {
     if (depth < 2 || search_score >= mate_score - 1000 || search_score <= -mate_score + 1000) {
         return;
     }
 
-    const int target = std::clamp(search_score - raw_evaluate(board), -256, 256);
+    const int target = std::clamp(search_score - raw_eval, -256, 256);
     int& entry = correction_entry(board);
     const int weight = std::clamp(depth, 1, 8);
     const int delta = target - entry;
