@@ -329,10 +329,54 @@ bool Board::in_check(Color color) const
     return is_valid_square(king) && is_square_attacked(king, opposite(color));
 }
 
-bool Board::gives_check(const Move& move) const
+Board::CheckInfo Board::check_info() const
 {
     const Color us = side_to_move_;
-    const int king = king_square(opposite(us));
+    CheckInfo info;
+    info.king = king_square(opposite(us));
+    if (!is_valid_square(info.king)) {
+        return info;
+    }
+
+    const int king = info.king;
+    const Bitboard diagonal_rays = bishop_attacks(king, occupancy_);
+    const Bitboard straight_rays = rook_attacks(king, occupancy_);
+    info.check_squares[piece_type_index(PieceType::Pawn)] = pawn_attacks(opposite(us), king);
+    info.check_squares[piece_type_index(PieceType::Knight)] = knight_attacks(king);
+    info.check_squares[piece_type_index(PieceType::Bishop)] = diagonal_rays;
+    info.check_squares[piece_type_index(PieceType::Rook)] = straight_rays;
+    info.check_squares[piece_type_index(PieceType::Queen)] = diagonal_rays | straight_rays;
+
+    // A piece of ours that the king sees along a line is a discoverer if a
+    // slider of ours appears behind it once it is gone.
+    const Bitboard queens = pieces(us, PieceType::Queen);
+    const Bitboard diagonal_sliders = pieces(us, PieceType::Bishop) | queens;
+    const Bitboard straight_sliders = pieces(us, PieceType::Rook) | queens;
+    const Bitboard own = occupancy(us);
+    for (Bitboard blockers = diagonal_rays & own; blockers != 0; blockers &= blockers - 1) {
+        const Bitboard blocker = blockers & (0 - blockers);
+        if ((bishop_attacks(king, occupancy_ ^ blocker) & diagonal_sliders & ~blocker) != 0) {
+            info.discoverers |= blocker;
+        }
+    }
+    for (Bitboard blockers = straight_rays & own; blockers != 0; blockers &= blockers - 1) {
+        const Bitboard blocker = blockers & (0 - blockers);
+        if ((rook_attacks(king, occupancy_ ^ blocker) & straight_sliders & ~blocker) != 0) {
+            info.discoverers |= blocker;
+        }
+    }
+    return info;
+}
+
+bool Board::gives_check(const Move& move) const
+{
+    return gives_check(move, check_info());
+}
+
+bool Board::gives_check(const Move& move, const CheckInfo& info) const
+{
+    const Color us = side_to_move_;
+    const int king = info.king;
     if (!is_valid_square(king)) {
         return false;
     }
@@ -347,13 +391,19 @@ bool Board::gives_check(const Move& move) const
         return next.make_move(move, undo) && next.in_check(opposite(us));
     }
 
-    const Bitboard occupancy = (occupancy_ & ~square_bb(move.from)) | square_bb(move.to);
+    // The side not to move is never in check, so a piece attacks the king
+    // from its target square exactly when that square is a check square:
+    // the square it leaves can only open a line it was not checking along.
     const PieceType type = piece_type(squares_[move.from]);
-    if ((attacks_from(type, us, move.to, occupancy) & square_bb(king)) != 0) {
+    if ((info.check_squares[piece_type_index(type)] & square_bb(move.to)) != 0) {
         return true;
     }
 
-    // Discovered check by a slider behind the moving piece.
+    // Discovered check, unless the piece stays on the line it blocked.
+    if ((info.discoverers & square_bb(move.from)) == 0) {
+        return false;
+    }
+    const Bitboard occupancy = (occupancy_ & ~square_bb(move.from)) | square_bb(move.to);
     const Bitboard queens = pieces(us, PieceType::Queen);
     const Bitboard diagonal = (pieces(us, PieceType::Bishop) | queens) & ~square_bb(move.from);
     const Bitboard straight = (pieces(us, PieceType::Rook) | queens) & ~square_bb(move.from);

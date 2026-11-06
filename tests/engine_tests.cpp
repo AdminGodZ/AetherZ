@@ -155,26 +155,30 @@ void test_incremental_hash_matches_full_hash()
 
 void test_gives_check_matches_making_the_move()
 {
-    const std::array<std::string_view, 4> fens{
+    const std::array<std::string_view, 5> fens{
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
         "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        // Discovered checks along a file, a rank and both diagonals.
+        "R1N1k3/8/2N3P1/7B/Q3N3/8/8/4R2K w - - 0 1",
     };
 
-    // Check every pseudo-legal move along random games from each position.
+    // Check every legal move along random games from each position.
     std::uint64_t state = 987654321;
     for (const auto fen : fens) {
         auto board = *aetherz::Board::from_fen(fen);
         for (int ply = 0; ply < 300; ++ply) {
+            const auto info = board.check_info();
             for (const auto& move : board.generate_pseudo_legal_moves()) {
                 auto next = board;
                 aetherz::Board::UndoState undo;
-                if (!next.make_move(move, undo)) {
+                if (!next.make_move(move, undo) || next.in_check(board.side_to_move())) {
                     continue;
                 }
                 const bool checks = next.in_check(next.side_to_move());
                 require(board.gives_check(move) == checks, "gives_check agrees with making the move");
+                require(board.gives_check(move, info) == checks, "gives_check with CheckInfo agrees with making the move");
             }
 
             const auto legal = board.generate_legal_moves();

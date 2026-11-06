@@ -851,6 +851,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     bool searched_move = false;
     int searched_moves = 0;
     MoveList quiets_tried;
+    const Board::CheckInfo check_info = board.check_info();
     while (const auto next_move = moves.next()) {
         const Move& move = *next_move;
         if (should_stop()) {
@@ -861,7 +862,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
 
         // Prune before making the move: cheaper than making and unmaking it.
-        const bool gives_check = board.gives_check(move);
+        const bool gives_check = board.gives_check(move, check_info);
         const bool capture = is_capture_like(move);
         const int see_gain = moves.see();
         const int move_index = searched_moves + 1;
@@ -1026,6 +1027,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     const bool include_quiet_checks = !in_check && quiet_check_depth > 0;
     const MoveGeneration generation = in_check || include_quiet_checks ? MoveGeneration::All : MoveGeneration::Tactical;
     MovePicker moves = ordered_moves(board, std::nullopt, ply, {}, generation);
+    const Board::CheckInfo check_info = include_quiet_checks ? board.check_info() : Board::CheckInfo{};
     while (const auto next_move = moves.next()) {
         const Move& move = *next_move;
         if (should_stop()) {
@@ -1037,7 +1039,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         }
 
         // Quiet moves are only searched here when they give check.
-        if (!in_check && !is_tactical(move) && !board.gives_check(move)) {
+        if (!in_check && !is_tactical(move) && !board.gives_check(move, check_info)) {
             continue;
         }
 
