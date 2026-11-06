@@ -1259,7 +1259,8 @@ std::vector<std::string> read_lines(const std::string& path)
     return lines;
 }
 
-aetherz::DatagenStats run_datagen(const std::string& path, std::uint64_t games, int threads)
+aetherz::DatagenStats run_datagen(
+    const std::string& path, std::uint64_t games, int threads, const std::string& eval_file = {})
 {
     std::filesystem::remove(path);
     aetherz::DatagenConfig config;
@@ -1268,6 +1269,7 @@ aetherz::DatagenStats run_datagen(const std::string& path, std::uint64_t games, 
     config.threads = threads;
     config.nodes = 400;
     config.hash_mb = 1;
+    config.eval_file = eval_file;
     return aetherz::generate_training_data(config, nullptr);
 }
 
@@ -1277,7 +1279,7 @@ void test_datagen_writes_valid_bullet_text()
     const auto stats = run_datagen(path, 3, 1);
     const auto lines = read_lines(path);
 
-    require(stats.games == 3, "datagen plays the requested games");
+    require(stats.ok && stats.games == 3, "datagen plays the requested games");
     require(stats.white_wins + stats.black_wins + stats.draws == 3, "datagen counts every result");
     require(stats.positions > 0 && lines.size() == stats.positions, "datagen writes one line per position");
 
@@ -1310,6 +1312,32 @@ void test_datagen_is_independent_of_thread_count()
     std::sort(single_lines.begin(), single_lines.end());
     std::sort(threaded_lines.begin(), threaded_lines.end());
     require(!single_lines.empty() && single_lines == threaded_lines, "datagen output does not depend on thread count");
+}
+
+void test_datagen_plays_with_a_network()
+{
+    const std::string network = write_random_network("aetherz_datagen_network.nnue");
+    const std::string classical = temp_path("aetherz_datagen_classical.txt");
+    const std::string single = temp_path("aetherz_datagen_nnue_single.txt");
+    const std::string threaded = temp_path("aetherz_datagen_nnue_threaded.txt");
+    (void)run_datagen(classical, 2, 1);
+    const auto stats = run_datagen(single, 2, 1, network);
+    (void)run_datagen(threaded, 2, 2, network);
+
+    auto single_lines = read_lines(single);
+    auto threaded_lines = read_lines(threaded);
+    require(stats.ok && stats.games == 2 && !single_lines.empty(), "datagen plays games with a network");
+    require(single_lines != read_lines(classical), "datagen with a network differs from the classical evaluation");
+    std::sort(single_lines.begin(), single_lines.end());
+    std::sort(threaded_lines.begin(), threaded_lines.end());
+    require(single_lines == threaded_lines, "datagen with a network does not depend on thread count");
+
+    std::string error;
+    aetherz::DatagenConfig config;
+    config.output_path = temp_path("aetherz_datagen_unused.txt");
+    config.eval_file = temp_path("aetherz_missing_network.nnue");
+    require(!aetherz::generate_training_data(config, nullptr, &error).ok, "datagen fails without its network");
+    require(error.find("could not load NNUE") == 0, "datagen reports the missing network");
 }
 
 void test_datagen_command_rejects_bad_options()
@@ -1460,6 +1488,7 @@ int main()
     test_time_plan_stays_within_clock();
     test_datagen_writes_valid_bullet_text();
     test_datagen_is_independent_of_thread_count();
+    test_datagen_plays_with_a_network();
     test_datagen_command_rejects_bad_options();
     test_search_benchmark_command_reports_summary();
     test_bench_command_is_deterministic();

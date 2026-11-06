@@ -203,13 +203,29 @@ std::optional<std::uint64_t> parse_unsigned(const std::string& text)
 
 } // namespace
 
-DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* progress)
+DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* progress, std::string* error)
 {
-    std::ofstream output{config.output_path, std::ios::app};
     DatagenStats stats;
+    // Checked once up front; every worker then loads its own copy.
+    if (!config.eval_file.empty()) {
+        std::string load_error;
+        nnue::NnueEvaluator probe;
+        if (!probe.load(config.eval_file, &load_error)) {
+            if (error != nullptr) {
+                *error = "could not load NNUE: " + load_error;
+            }
+            return stats;
+        }
+    }
+
+    std::ofstream output{config.output_path, std::ios::app};
     if (!output) {
+        if (error != nullptr) {
+            *error = "could not open " + config.output_path + " for writing";
+        }
         return stats;
     }
+    stats.ok = true;
 
     std::mutex mutex;
     std::atomic<std::uint64_t> next_game{0};
@@ -219,6 +235,9 @@ DatagenStats generate_training_data(const DatagenConfig& config, std::ostream* p
     auto worker = [&]() {
         auto search = std::make_unique<Search>();
         search->set_hash_size_mb(static_cast<std::size_t>(std::max(1, config.hash_mb)));
+        if (!config.eval_file.empty()) {
+            (void)search->load_nnue(config.eval_file);
+        }
         std::vector<Sample> samples;
         std::string lines;
 
@@ -273,7 +292,8 @@ int run_datagen_command(const std::vector<std::string>& args, std::ostream& outp
 {
     const auto usage = [&error] {
         error << "usage: aetherz datagen <output-file> [--games N] [--threads N] [--nodes N]\n"
-                 "                       [--random-plies N] [--seed N] [--hash MB]\n";
+                 "                       [--random-plies N] [--seed N] [--hash MB]\n"
+                 "                       [--eval-file <network or <embedded>>]\n";
         return 1;
     };
 
@@ -286,6 +306,10 @@ int run_datagen_command(const std::vector<std::string>& args, std::ostream& outp
     for (std::size_t index = 2; index < args.size(); index += 2) {
         if (index + 1 >= args.size()) {
             return usage();
+        }
+        if (args[index] == "--eval-file") {
+            config.eval_file = args[index + 1];
+            continue;
         }
         const auto value = parse_unsigned(args[index + 1]);
         if (!value) {
@@ -310,18 +334,17 @@ int run_datagen_command(const std::vector<std::string>& args, std::ostream& outp
         }
     }
 
-    {
-        std::ofstream probe{config.output_path, std::ios::app};
-        if (!probe) {
-            error << "could not open " << config.output_path << " for writing\n";
-            return 1;
-        }
-    }
-
     output << "datagen " << config.games << " games, " << config.threads << " threads, "
            << config.nodes << " nodes per move, " << config.random_plies << "-" << config.random_plies + 1
-           << " random plies, seed " << config.seed << ", appending to " << config.output_path << std::endl;
-    const DatagenStats stats = generate_training_data(config, &output);
+           << " random plies, seed " << config.seed << ", eval "
+           << (config.eval_file.empty() ? std::string{"classical"} : config.eval_file)
+           << ", appending to " << config.output_path << std::endl;
+    std::string failure;
+    const DatagenStats stats = generate_training_data(config, &output, &failure);
+    if (!stats.ok) {
+        error << failure << '\n';
+        return 1;
+    }
     output << "datagen wrote " << stats.positions << " positions from " << stats.games << " games" << std::endl;
     return 0;
 }
