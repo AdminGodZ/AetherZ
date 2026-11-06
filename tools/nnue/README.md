@@ -15,6 +15,9 @@ Generate training positions with self-play:
   ply 80). Openings scored beyond 1000 cp are replayed.
 - A position is kept when the side to move is not in check, the move played
   from it is not a capture or promotion, and its score is not a mate score.
+- `--eval-file <quantised.bin>` plays the games with a network instead of
+  the classical evaluation (`<embedded>` selects a built-in network), for
+  training the next network on the previous one's games.
 - Every game depends only on `--seed` and its game number, so the output is
   the same whatever the thread count. Use a new seed for every new batch.
   Output is appended to the file.
