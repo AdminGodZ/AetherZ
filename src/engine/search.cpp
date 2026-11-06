@@ -18,6 +18,7 @@ namespace {
 
 constexpr int infinity = 32000;
 constexpr int initial_aspiration_window = 35;
+constexpr int nnue_eval_percent = 70;
 
 std::int64_t deadline_after(std::chrono::milliseconds duration)
 {
@@ -1085,9 +1086,13 @@ int Search::corrected_eval(const Board& board, int raw_eval) const
 int Search::raw_evaluate(const Board& board) const
 {
     if (can_use_nnue()) {
-        // Keep network scores clear of mate scores and within the int16
-        // eval stored in the transposition table.
-        return std::clamp(nnue_.evaluate(board), -mate_score + 1000, mate_score - 1000);
+        // The network scores material about 1.4 times higher than the
+        // classical evaluation that the search margins were tuned for (a
+        // pawn about 140, a queen about 1450), so scale it back to those
+        // units. Keep network scores clear of mate scores and within the
+        // int16 eval stored in the transposition table.
+        const int eval = nnue_.evaluate(board) * nnue_eval_percent / 100;
+        return std::clamp(eval, -mate_score + 1000, mate_score - 1000);
     }
 
     return evaluate_side_to_move(board);
