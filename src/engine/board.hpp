@@ -91,8 +91,23 @@ public:
 
     [[nodiscard]] bool is_square_attacked(int square, Color by_color) const;
     [[nodiscard]] bool in_check(Color color) const;
-    // Whether a pseudo-legal move of the side to move checks the opponent.
+    // What gives_check needs to know about the opponent's king, computed
+    // once per position instead of once per move.
+    struct CheckInfo {
+        int king = -1;
+        // Squares from which a piece of each type would attack the king.
+        std::array<Bitboard, 6> check_squares{};
+        // Our pieces that block one of our sliders' lines to the king.
+        Bitboard discoverers = 0;
+    };
+
+    [[nodiscard]] CheckInfo check_info() const;
+    // Whether a move of the side to move checks the opponent. Exact for legal
+    // moves; for a pseudo-legal move that leaves its own king in check (which
+    // the search discards anyway) the answer may be wrong.
     [[nodiscard]] bool gives_check(const Move& move) const;
+    // The same with check_info() of this position, for many moves at once.
+    [[nodiscard]] bool gives_check(const Move& move, const CheckInfo& info) const;
 
     [[nodiscard]] MoveList generate_pseudo_legal_moves() const;
     [[nodiscard]] MoveList generate_pseudo_legal_tactical_moves() const;
