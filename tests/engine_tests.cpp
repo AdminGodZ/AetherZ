@@ -1218,6 +1218,17 @@ void test_syzygy_with_tables()
     require(reply && reply->moves.front().score < 0, "the search keeps the tablebase win");
     require(result.score >= aetherz::tb_win_score - aetherz::max_search_ply, "a won tablebase root reports a tablebase or mate score");
 
+    // Datagen with tablebases ends games at positions in the tables.
+    aetherz::DatagenConfig config;
+    config.output_path = temp_path("datagen-syzygy.txt");
+    std::filesystem::remove(config.output_path);
+    config.games = 4;
+    config.nodes = 500;
+    config.syzygy_path = path;
+    const auto stats = aetherz::generate_training_data(config, nullptr);
+    require(stats.ok && stats.games == 4, "datagen runs with tablebases");
+    std::filesystem::remove(config.output_path);
+
     require(aetherz::syzygy::init(""), "Syzygy tables unload");
 }
 
@@ -1432,6 +1443,14 @@ void test_datagen_command_rejects_bad_options()
         aetherz::run_datagen_command({"datagen", temp_path("unused.txt"), "--bogus", "1"}, output, error) == 1,
         "datagen rejects unknown options");
     require(error.str().find("usage: aetherz datagen") != std::string::npos, "datagen prints usage");
+    std::ostringstream tb_error;
+    require(
+        aetherz::run_datagen_command(
+            {"datagen", temp_path("unused.txt"), "--games", "1", "--syzygy", temp_path("no-tables-here")}, output, tb_error)
+            == 1,
+        "datagen rejects a tablebase path without tables");
+    require(tb_error.str().find("no Syzygy tablebases found") != std::string::npos, "datagen says the tablebases are missing");
+    require(aetherz::syzygy::init(""), "datagen's failed tablebase load leaves no tables loaded");
 }
 
 void test_search_benchmark_command_reports_summary()

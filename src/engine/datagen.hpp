@@ -22,6 +22,10 @@ struct DatagenConfig {
     // Network to play with (a file or "<embedded>"); empty for the classical
     // evaluation.
     std::string eval_file;
+    // Syzygy tablebase folder(s). When set, a game ends with the tablebase
+    // result as soon as a capture or pawn move leads to a position in the
+    // tables, and the searches use the tables too. Empty for none.
+    std::string syzygy_path;
 };
 
 struct DatagenStats {
@@ -31,14 +35,16 @@ struct DatagenStats {
     std::uint64_t white_wins = 0;
     std::uint64_t black_wins = 0;
     std::uint64_t draws = 0;
+    // Games ended by the tablebases.
+    std::uint64_t tablebase_results = 0;
 };
 
 // Plays self-play games and appends training positions to the output file as
 // Bullet text: "<fen> | <white-relative centipawns> | <white result 1.0/0.5/0.0>".
 // Every game depends only on the seed and its game number, never on how
 // games are spread over threads.
-// Returns empty stats if the output file or the network cannot be opened;
-// error, if given, then says why.
+// Returns empty stats if the output file, the network or the tablebases
+// cannot be opened; error, if given, then says why.
 [[nodiscard]] DatagenStats generate_training_data(
     const DatagenConfig& config, std::ostream* progress, std::string* error = nullptr);
 
