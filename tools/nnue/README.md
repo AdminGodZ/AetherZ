@@ -113,6 +113,13 @@ weights with no header, padded to a multiple of 64 bytes. Load it as is:
 setoption name EvalFile value checkpoints/simple-40/quantised.bin
 ```
 
+To ship a network inside the executable, configure with
+`-DAETHERZ_EVALFILE=path/to/quantised.bin`. The engine then loads it at
+start-up (`EvalFile` defaults to `<embedded>`, and `bench` uses it, so the
+bench node count differs from builds without a network); setting `EvalFile`
+to a file still replaces it, and `setoption name EvalFile value <embedded>`
+switches back.
+
 The engine answers `info string loaded NNUE <path>`, or
 `info string failed to load NNUE: <reason>` if the file does not have the
 size of this architecture. `UseNNUE false` switches back to the classical

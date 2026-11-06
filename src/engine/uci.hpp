@@ -31,7 +31,8 @@ struct TimePlan {
 
 class UciEngine {
 public:
-    UciEngine() = default;
+    // Loads the built-in network, if the engine has one.
+    UciEngine();
     UciEngine(const UciEngine&) = delete;
     UciEngine& operator=(const UciEngine&) = delete;
     ~UciEngine();

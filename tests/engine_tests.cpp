@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -807,6 +808,38 @@ void test_nnue_loads_bullet_sized_files()
     require(error.find("could not open") != std::string::npos, "missing network reports open failure");
 }
 
+void test_nnue_parses_networks_from_memory()
+{
+    const std::string path = write_random_network("aetherz_random_memory.nnue", 62);
+    std::ifstream input{path, std::ios::binary};
+    const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    require(bytes.size() == aetherz::nnue::network_file_size + 62, "test network has the expected size");
+
+    const auto from_file = aetherz::nnue::load_network(path);
+    const auto from_memory = aetherz::nnue::parse_network(bytes, "memory");
+    require(from_file && from_memory, "network loads from a file and from memory");
+    require(
+        from_file->feature_weights[767].values == from_memory->feature_weights[767].values
+            && from_file->output_weights == from_memory->output_weights
+            && from_file->output_bias == from_memory->output_bias,
+        "file and memory networks are the same");
+
+    std::string error;
+    const std::span<const unsigned char> truncated{bytes.data(), aetherz::nnue::network_file_size - 2};
+    require(!aetherz::nnue::parse_network(truncated, "memory", &error), "truncated network is rejected");
+    require(error.find("memory is ") == 0, "memory network errors use the given name");
+
+    // "<embedded>" selects the network built in with AETHERZ_EVALFILE.
+    aetherz::nnue::NnueEvaluator evaluator;
+    const bool built_in = !aetherz::nnue::embedded_network().empty();
+    require(
+        evaluator.load(aetherz::nnue::embedded_network_name) == built_in,
+        "the built-in network loads exactly when there is one");
+    require(
+        evaluator.eval_file() == (built_in ? std::string{aetherz::nnue::embedded_network_name} : std::string{}),
+        "the built-in network reports its name");
+}
+
 void test_nnue_matches_hand_computed_evaluation()
 {
     using aetherz::nnue::hidden_size;
@@ -1387,6 +1420,7 @@ int main()
     test_search_scores_repetition_draw();
     test_uci_go_time_controls();
     test_nnue_loads_bullet_sized_files();
+    test_nnue_parses_networks_from_memory();
     test_nnue_matches_hand_computed_evaluation();
     test_nnue_incremental_updates_match_refresh();
     test_nnue_evaluation_is_colour_symmetric();

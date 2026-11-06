@@ -227,7 +227,11 @@ int run_bench_command(const std::vector<std::string>& args, std::ostream& output
         return 1;
     }
 
+    // Bench what the engine plays with: the built-in network, if there is one.
     Search search;
+    if (!nnue::embedded_network().empty()) {
+        (void)search.load_nnue(nnue::embedded_network_name);
+    }
     std::uint64_t total_nodes = 0;
     const auto start = std::chrono::steady_clock::now();
 

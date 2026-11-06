@@ -147,6 +147,13 @@ TimePlan plan_time(int remaining_ms, int increment_ms, std::optional<int> moves_
     };
 }
 
+UciEngine::UciEngine()
+{
+    if (!nnue::embedded_network().empty()) {
+        (void)search_.load_nnue(nnue::embedded_network_name);
+    }
+}
+
 UciEngine::~UciEngine()
 {
     stop_search();
@@ -183,9 +190,11 @@ void UciEngine::loop(std::istream& input, std::ostream& output)
                 "option name Move Overhead type spin default 30 min 0 max 5000\n"
                 "option name Ponder type check default false\n"
                 "option name Clear Hash type button\n"
-                "option name UseNNUE type check default true\n"
-                "option name EvalFile type string default\n"
-                "uciok\n");
+                "option name UseNNUE type check default true\n");
+            write(nnue::embedded_network().empty()
+                    ? std::string{"option name EvalFile type string default\n"}
+                    : "option name EvalFile type string default " + std::string{nnue::embedded_network_name} + "\n");
+            write("uciok\n");
         } else if (command == "isready") {
             write("readyok\n");
         } else if (command == "setoption") {

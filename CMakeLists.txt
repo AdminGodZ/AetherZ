@@ -13,6 +13,7 @@ endif()
 
 option(AETHERZ_NATIVE "Optimize for the host CPU" ON)
 option(AETHERZ_LTO "Enable link-time optimization" ON)
+set(AETHERZ_EVALFILE "" CACHE FILEPATH "Bullet quantised.bin to build into the engine as its default network")
 
 if(AETHERZ_LTO)
     include(CheckIPOSupported)
@@ -43,6 +44,7 @@ add_library(aetherz_engine
     src/engine/datagen.cpp
     src/engine/epd.cpp
     src/engine/evaluate.cpp
+    src/engine/nnue/embedded.cpp
     src/engine/nnue/features.cpp
     src/engine/nnue/network.cpp
     src/engine/nnue/nnue.cpp
@@ -57,6 +59,24 @@ add_library(aetherz_engine
 target_include_directories(aetherz_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# The network becomes a byte array in embedded.cpp. The generated file only
+# changes (and recompiles) when the network does.
+if(AETHERZ_EVALFILE)
+    if(NOT EXISTS "${AETHERZ_EVALFILE}")
+        message(FATAL_ERROR "AETHERZ_EVALFILE: ${AETHERZ_EVALFILE} does not exist")
+    endif()
+    file(READ "${AETHERZ_EVALFILE}" aetherz_network_hex HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," aetherz_network_bytes "${aetherz_network_hex}")
+    file(CONFIGURE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_network.inc"
+        CONTENT "${aetherz_network_bytes}\n")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${AETHERZ_EVALFILE}")
+    set_source_files_properties(src/engine/nnue/embedded.cpp PROPERTIES
+        COMPILE_DEFINITIONS AETHERZ_EMBEDDED_NETWORK
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    message(STATUS "Built-in network: ${AETHERZ_EVALFILE}")
+endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(aetherz_engine PUBLIC Threads::Threads)
