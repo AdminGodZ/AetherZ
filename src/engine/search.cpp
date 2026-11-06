@@ -367,8 +367,10 @@ SearchResult Search::find_best_move(Board& board, const SearchLimits& limits)
     int previous_score = 0;
     int stable_iterations = 0;
 
+    // Depth 1 always runs, so that even a search stopped right away returns
+    // a legal move.
     for (int depth = 1; depth <= max_depth; ++depth) {
-        if (should_stop(true)) {
+        if (depth > 1 && should_stop(true)) {
             break;
         }
 
@@ -585,7 +587,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
     bool searched_move = false;
 
     for (std::size_t index = 0; index < moves.size(); ++index) {
-        if (should_stop(true)) {
+        if (searched_move && should_stop(true)) {
             break;
         }
 
