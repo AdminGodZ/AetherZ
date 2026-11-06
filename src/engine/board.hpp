@@ -11,25 +11,35 @@
 
 namespace aetherz {
 
+// Array storage that is left uninitialised on construction. Move containers
+// are created at every search node and usually hold a few dozen moves, so
+// initialising all of their slots would cost more than filling them.
+template <typename T, std::size_t Size>
+union UninitializedArray {
+    UninitializedArray() {}
+
+    std::array<T, Size> values;
+};
+
 // Fixed-capacity move container so move generation never allocates.
 class MoveList {
 public:
     static constexpr std::size_t capacity = 256;
 
-    void push_back(const Move& move) { moves_[size_++] = move; }
+    void push_back(const Move& move) { moves_.values[size_++] = move; }
     void clear() { size_ = 0; }
 
     [[nodiscard]] std::size_t size() const { return size_; }
     [[nodiscard]] bool empty() const { return size_ == 0; }
-    [[nodiscard]] Move& operator[](std::size_t index) { return moves_[index]; }
-    [[nodiscard]] const Move& operator[](std::size_t index) const { return moves_[index]; }
-    [[nodiscard]] Move* begin() { return moves_.data(); }
-    [[nodiscard]] Move* end() { return moves_.data() + size_; }
-    [[nodiscard]] const Move* begin() const { return moves_.data(); }
-    [[nodiscard]] const Move* end() const { return moves_.data() + size_; }
+    [[nodiscard]] Move& operator[](std::size_t index) { return moves_.values[index]; }
+    [[nodiscard]] const Move& operator[](std::size_t index) const { return moves_.values[index]; }
+    [[nodiscard]] Move* begin() { return moves_.values.data(); }
+    [[nodiscard]] Move* end() { return moves_.values.data() + size_; }
+    [[nodiscard]] const Move* begin() const { return moves_.values.data(); }
+    [[nodiscard]] const Move* end() const { return moves_.values.data() + size_; }
 
 private:
-    std::array<Move, capacity> moves_;
+    UninitializedArray<Move, capacity> moves_;
     std::size_t size_ = 0;
 };
 
