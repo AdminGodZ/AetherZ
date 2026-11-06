@@ -1025,7 +1025,8 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     bool searched_move = false;
     const bool include_quiet_checks = !in_check && quiet_check_depth > 0;
     const MoveGeneration generation = in_check || include_quiet_checks ? MoveGeneration::All : MoveGeneration::Tactical;
-    MovePicker moves = ordered_moves(board, std::nullopt, ply, {}, generation);
+    const std::optional<Move> tt_move = tt_entry ? std::optional<Move>{tt_entry->best_move} : std::nullopt;
+    MovePicker moves = ordered_moves(board, tt_move, ply, {}, generation);
     while (const auto next_move = moves.next()) {
         const Move& move = *next_move;
         if (should_stop()) {
