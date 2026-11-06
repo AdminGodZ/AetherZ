@@ -10,10 +10,16 @@
 
 namespace aetherz::nnue {
 
+// CMake sets this from the built-in network (option AETHERZ_NNUE_HIDDEN).
+#ifndef AETHERZ_NNUE_HIDDEN
+#define AETHERZ_NNUE_HIDDEN 256
+#endif
+
 // (768 -> hidden_size)x2 -> 1 with SCReLU, as trained by Bullet's `simple`
 // example. The quantisation constants must match the ones used for training.
 inline constexpr int input_size = 768;
-inline constexpr int hidden_size = 256;
+inline constexpr int hidden_size = AETHERZ_NNUE_HIDDEN;
+static_assert(hidden_size >= 16 && hidden_size % 16 == 0, "the hidden size must be a positive multiple of 16");
 inline constexpr int qa = 255;
 inline constexpr int qb = 64;
 inline constexpr int eval_scale = 400;
