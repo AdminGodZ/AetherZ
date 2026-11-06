@@ -15,7 +15,7 @@ option(AETHERZ_NATIVE "Optimize for the host CPU" ON)
 option(AETHERZ_LTO "Enable link-time optimization" ON)
 # The network the engine plays with unless EvalFile says otherwise. Configure
 # with -DAETHERZ_EVALFILE= for an engine that uses the classical evaluation.
-set(AETHERZ_EVALFILE "${CMAKE_CURRENT_SOURCE_DIR}/networks/aetherz-v1-w30.bin" CACHE FILEPATH
+set(AETHERZ_EVALFILE "${CMAKE_CURRENT_SOURCE_DIR}/networks/aetherz-v2c2-w30.bin" CACHE FILEPATH
     "Bullet quantised.bin to build into the engine as its default network")
 # The engine loads (768 -> N)x2 -> 1 networks of one hidden size N, fixed at
 # compile time. Empty: the size of the built-in network, or 256 without one.

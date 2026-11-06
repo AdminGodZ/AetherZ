@@ -15,7 +15,7 @@ portable binary and `-DCMAKE_BUILD_TYPE=Debug` when debugging. Always measure
 and play with a Release build: a Debug build is many times slower.
 
 The engine evaluates positions with an NNUE network built into the
-executable, `networks/aetherz-v1-w30.bin` by default (see
+executable, `networks/aetherz-v2c2-w30.bin` by default (see
 [tools/nnue](tools/nnue/README.md) for how networks are trained). Configure
 with `-DAETHERZ_EVALFILE=` for an engine that uses the classical evaluation,
 or point it at another network file.
