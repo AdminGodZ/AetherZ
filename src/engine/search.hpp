@@ -234,6 +234,9 @@ private:
     // enough for any thread's stack (the main thread gets 1-2 MB on Windows).
     using ContinuationHistory = std::array<std::array<std::array<int, 64>, 64>, 64>;
     std::unique_ptr<ContinuationHistory> continuation_history_ = std::make_unique<ContinuationHistory>();
+    // Capture history by moving piece, target square and captured piece type.
+    using CaptureHistory = std::array<std::array<std::array<int, 6>, 64>, 13>;
+    std::unique_ptr<CaptureHistory> capture_history_ = std::make_unique<CaptureHistory>();
     // Static evaluation corrections keyed by pawn structure and side to move.
     using CorrectionHistory = std::array<std::array<int, correction_history_size>, 2>;
     std::unique_ptr<CorrectionHistory> correction_history_ = std::make_unique<CorrectionHistory>();
@@ -315,6 +318,8 @@ private:
     [[nodiscard]] int repetition_count(const Board& board) const;
     [[nodiscard]] int continuation_score(const Move& move, Move previous_move) const;
     [[nodiscard]] int quiet_history_score(const Move& move, Move previous_move) const;
+    [[nodiscard]] int& capture_history_entry(const Board& board, const Move& move);
+    [[nodiscard]] int capture_history_score(const Board& board, const Move& move) const;
     void reset_position_history(const Board& board, const SearchLimits& limits);
     void push_position(const Board& board);
     void pop_position();
@@ -324,7 +329,14 @@ private:
     void pop_nnue();
     [[nodiscard]] bool can_use_nnue() const;
     void clear_killers();
-    void record_cutoff(const Move& move, int depth, int ply, Move previous_move, const MoveList& quiets_tried);
+    void record_cutoff(
+        const Board& board,
+        const Move& move,
+        int depth,
+        int ply,
+        Move previous_move,
+        const MoveList& quiets_tried,
+        const MoveList& captures_tried);
     void update_correction_history(const Board& board, int depth, int search_score);
 };
 

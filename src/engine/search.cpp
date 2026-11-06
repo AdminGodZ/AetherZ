@@ -58,6 +58,20 @@ int piece_value(PieceType type)
     return middlegame_piece_value(type);
 }
 
+// History gravity: entries move towards the bonus and saturate smoothly
+// instead of being clamped.
+void update_history(int& entry, int bonus)
+{
+    constexpr int history_limit = 16'384;
+    entry += bonus - entry * std::abs(bonus) / history_limit;
+}
+
+int captured_type(const Board& board, const Move& move)
+{
+    return move.flag == MoveFlag::EnPassant ? static_cast<int>(PieceType::Pawn)
+                                            : static_cast<int>(piece_type(board.piece_at(move.to)));
+}
+
 int move_key(const Move& move)
 {
     return (move.from << 9) | (move.to << 3) | static_cast<int>(move.promotion);
@@ -486,6 +500,11 @@ void Search::clear()
             row.fill(0);
         }
     }
+    for (auto& table : *capture_history_) {
+        for (auto& row : table) {
+            row.fill(0);
+        }
+    }
     for (auto& table : *correction_history_) {
         table.fill(0);
     }
@@ -625,7 +644,7 @@ SearchResult Search::search_depth(Board& board, int depth, int alpha, int beta)
 
         alpha = std::max(alpha, score);
         if (alpha >= beta) {
-            record_cutoff(move, depth, 0, {}, {});
+            record_cutoff(board, move, depth, 0, {}, {}, {});
             break;
         }
     }
@@ -851,6 +870,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     bool searched_move = false;
     int searched_moves = 0;
     MoveList quiets_tried;
+    MoveList captures_tried;
     while (const auto next_move = moves.next()) {
         const Move& move = *next_move;
         if (should_stop()) {
@@ -947,11 +967,13 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
         }
         alpha = std::max(alpha, score);
         if (alpha >= beta) {
-            record_cutoff(move, depth, ply, previous_move, quiets_tried);
+            record_cutoff(board, move, depth, ply, previous_move, quiets_tried, captures_tried);
             break;
         }
         if (is_quiet(move)) {
             quiets_tried.push_back(move);
+        } else if (is_capture_like(move)) {
+            captures_tried.push_back(move);
         }
     }
 
@@ -1192,7 +1214,7 @@ MovePicker Search::ordered_moves(
             }
         } else if (is_capture_like(move)) {
             entry.stage = entry.see >= 0 ? GoodCaptures : BadCaptures;
-            entry.score = entry.see * 8 + capture_score(board, move);
+            entry.score = entry.see * 8 + capture_score(board, move) + capture_history_score(board, move) / 8;
         } else {
             int score = 0;
             if (move.flag == MoveFlag::KingCastle || move.flag == MoveFlag::QueenCastle) {
@@ -1445,6 +1467,16 @@ int Search::quiet_history_score(const Move& move, Move previous_move) const
     return history_[move.from][move.to] + continuation_score(move, previous_move);
 }
 
+int& Search::capture_history_entry(const Board& board, const Move& move)
+{
+    return (*capture_history_)[static_cast<int>(board.piece_at(move.from))][move.to][captured_type(board, move)];
+}
+
+int Search::capture_history_score(const Board& board, const Move& move) const
+{
+    return (*capture_history_)[static_cast<int>(board.piece_at(move.from))][move.to][captured_type(board, move)];
+}
+
 void Search::reset_position_history(const Board& board, const SearchLimits& limits)
 {
     position_history_ = limits.position_history;
@@ -1505,9 +1537,25 @@ void Search::clear_killers()
     }
 }
 
-void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_move, const MoveList& quiets_tried)
+void Search::record_cutoff(
+    const Board& board,
+    const Move& move,
+    int depth,
+    int ply,
+    Move previous_move,
+    const MoveList& quiets_tried,
+    const MoveList& captures_tried)
 {
+    const int bonus = std::min(16 * depth * depth, 1200);
+
+    // Captures searched before the cutoff move failed to cut off.
+    for (const Move& tried : captures_tried) {
+        update_history(capture_history_entry(board, tried), -bonus);
+    }
     if (is_tactical(move)) {
+        if (is_capture_like(move)) {
+            update_history(capture_history_entry(board, move), bonus);
+        }
         return;
     }
 
@@ -1516,25 +1564,17 @@ void Search::record_cutoff(const Move& move, int depth, int ply, Move previous_m
         killer_moves_[ply][0] = move;
     }
 
-    // History gravity: entries move towards the bonus and saturate smoothly
-    // instead of being clamped.
-    constexpr int history_limit = 16'384;
-    auto update = [](int& entry, int bonus) {
-        entry += bonus - entry * std::abs(bonus) / history_limit;
-    };
-    const int bonus = std::min(16 * depth * depth, 1200);
     const bool has_previous = previous_move.is_valid();
-
-    update(history_[move.from][move.to], bonus);
+    update_history(history_[move.from][move.to], bonus);
     if (has_previous) {
-        update((*continuation_history_)[previous_move.to][move.from][move.to], bonus * 2);
+        update_history((*continuation_history_)[previous_move.to][move.from][move.to], bonus * 2);
     }
 
     // Quiet moves searched before the cutoff move failed to cut off.
     for (const Move& tried : quiets_tried) {
-        update(history_[tried.from][tried.to], -bonus);
+        update_history(history_[tried.from][tried.to], -bonus);
         if (has_previous) {
-            update((*continuation_history_)[previous_move.to][tried.from][tried.to], -bonus * 2);
+            update_history((*continuation_history_)[previous_move.to][tried.from][tried.to], -bonus * 2);
         }
     }
 }
