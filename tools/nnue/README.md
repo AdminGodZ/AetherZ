@@ -34,18 +34,75 @@ bullet-utils convert --from text --input data/aetherz-train.txt --output data/ae
 
 ## Training
 
-Train with [Bullet](https://github.com/jw1912/bullet)'s `examples/simple.rs`,
-changing only `HIDDEN_SIZE` to 256 (and the data loader to your data). The
-engine's network is fixed at compile time (`src/engine/nnue/network.hpp`)
-and must match the example's other settings:
+`tools/nnue/trainer/` is a small Rust crate: [Bullet](https://github.com/jw1912/bullet)'s
+`examples/simple.rs` with `HIDDEN_SIZE = 256` and command-line options. It
+depends on Bullet at a pinned commit. The engine's network is fixed at
+compile time (`src/engine/nnue/network.hpp`) and the trainer matches it:
 
 - inputs `Chess768`, `(768 -> 256)x2 -> 1`, SCReLU, side to move first
 - `QA = 255`, `QB = 64`, `SCALE = 400`
 - save format `l0w`, `l0b` quantised by QA, `l1w` by QB, `l1b` by QA * QB
 
-Bullet needs a GPU backend, for example
-`cargo run --release --features cuda --package bullet_lib --example simple`
-(or `rocm`, or `metal` on a Mac).
+Bullet needs a GPU backend. The crate enables `cuda` by default; use
+`--no-default-features --features rocm` (or `metal` on a Mac) otherwise.
+CUDA builds need `CUDA_PATH` pointing at the toolkit (with `lib64/`).
+
+```sh
+cd tools/nnue/trainer
+cargo run --release -- --help
+cargo run --release -- data/train.bf --output-dir checkpoints --net-id aetherz \
+    --superbatches 40 --start-lr 0.001 --final-lr 0.0000081 --wdl 0.75
+```
+
+Without arguments other than the data the defaults are those of `simple`:
+40 superbatches of 6104 batches of 16384 positions, AdamW, LR 0.001 dropping
+10x every 18 superbatches, WDL 0.75, a checkpoint every 10 superbatches and
+at the end. `--final-lr` switches to cosine decay to that LR.
+
+## Full pipeline (WSL2 + RTX 5080)
+
+The training PC runs everything inside WSL2 Ubuntu 24.04, user-local:
+CUDA 12.9.1 in `~/cuda-12.9.1`, Rust via rustup, Bullet in `~/bullet`.
+`~/.nnue_env.sh` (sourced from `~/.profile` and `~/.bashrc`) sets
+`CUDA_PATH`, `CUDA_HOME`, `PATH` and `LD_LIBRARY_PATH` (including
+`/usr/lib/wsl/lib`, where the Windows driver puts `libcuda`).
+
+```sh
+# 0. Tools (once)
+cmake -S . -B build-datagen -G Ninja -DCMAKE_BUILD_TYPE=Release -DAETHERZ_NATIVE=ON
+cmake --build build-datagen
+(cd ~/bullet && cargo build -r --package bullet-utils)
+(cd tools/nnue/trainer && cargo build -r)
+U=~/bullet/target/release/bullet-utils
+
+# 1. Self-play data, a new seed for every batch. Survives the shell closing.
+setsid nohup ./build-datagen/aetherz datagen ~/nnue-data/batch02.txt \
+    --threads 20 --seed 2 --games 400000 > ~/nnue-data/batch02.log 2>&1 < /dev/null &
+
+# 2. Text -> BulletFormat (32 bytes a position), then shuffle each batch.
+#    Datagen writes whole games in order, so never train on unshuffled data.
+$U convert --from text --input ~/nnue-data/batch02.txt --output ~/nnue-data/batch02.bf --threads 8
+$U shuffle --input ~/nnue-data/batch02.bf --output ~/nnue-data/batch02-shuf.bf --mem-used-mb 8192
+
+# 3. Merge shuffled batches into one training file.
+$U interleave ~/nnue-data/batch01-shuf.bf ~/nnue-data/batch02-shuf.bf --output ~/nnue-data/train.bf
+
+# 4. Train (or pass several .bf files directly).
+tools/nnue/trainer/target/release/aetherz-trainer ~/nnue-data/train.bf \
+    --output-dir ~/nnue-checkpoints --net-id aetherz-v1 \
+    --superbatches 40 --batches-per-superbatch 610 --final-lr 0.0000081
+
+# 5. Load in the engine (UCI).
+#    setoption name EvalFile value /home/<user>/nnue-checkpoints/aetherz-v1-40/quantised.bin
+```
+
+Rough numbers on this machine: datagen with 20 threads makes about 3000
+games (about 275k positions) a minute, 91 positions a game; training runs at
+20-26M positions a second, so a 40 x 100M-position run takes about 3 minutes
+of GPU time. Data is the bottleneck: size `--batches-per-superbatch` so a run
+sees each position a handful of times (`610` x 16384 x 40 is about 400M
+positions, about 10 passes over 40M positions), and add data before adding
+superbatches.
 
 ## Using a network
 
