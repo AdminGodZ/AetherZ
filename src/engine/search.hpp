@@ -256,7 +256,7 @@ private:
         int beta,
         Move previous_move,
         Move excluded_move = {});
-    [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth);
+    [[nodiscard]] int quiescence(Board& board, int ply, int alpha, int beta);
     [[nodiscard]] int evaluate(const Board& board) const;
     [[nodiscard]] int raw_evaluate(const Board& board) const;
     [[nodiscard]] int corrected_eval(const Board& board, int raw_eval) const;

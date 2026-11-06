@@ -707,7 +707,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     }
 
     if (depth <= 0) {
-        return quiescence(board, ply, alpha, beta, 1);
+        return quiescence(board, ply, alpha, beta);
     }
 
     // Mate distance pruning: no line from here can beat a mate already found
@@ -779,7 +779,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     }
 
     if (!singular_search && can_try_razoring(depth, ply, alpha, beta, in_check, current_static_eval())) {
-        const int score = quiescence(board, ply, alpha, beta, 0);
+        const int score = quiescence(board, ply, alpha, beta);
         if (score <= alpha) {
             return score;
         }
@@ -983,7 +983,7 @@ int Search::negamax(Board& board, int depth, int ply, int alpha, int beta, Move 
     return best;
 }
 
-int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_check_depth)
+int Search::quiescence(Board& board, int ply, int alpha, int beta)
 {
     count_node();
     seldepth_ = std::max(seldepth_, ply);
@@ -1024,10 +1024,10 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
     Move best_move;
 
     bool searched_move = false;
-    const bool include_quiet_checks = !in_check && quiet_check_depth > 0;
-    const MoveGeneration generation = in_check || include_quiet_checks ? MoveGeneration::All : MoveGeneration::Tactical;
+    // Out of check only captures and promotions are searched: looking for
+    // quiet checks here cost more time than it found.
+    const MoveGeneration generation = in_check ? MoveGeneration::All : MoveGeneration::Tactical;
     MovePicker moves = ordered_moves(board, std::nullopt, ply, {}, generation);
-    const Board::CheckInfo check_info = include_quiet_checks ? board.check_info() : Board::CheckInfo{};
     while (const auto next_move = moves.next()) {
         const Move& move = *next_move;
         if (should_stop()) {
@@ -1035,11 +1035,6 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         }
 
         if (!in_check && is_capture_like(move) && moves.see() < 0) {
-            continue;
-        }
-
-        // Quiet moves are only searched here when they give check.
-        if (!in_check && !is_tactical(move) && !board.gives_check(move, check_info)) {
             continue;
         }
 
@@ -1051,8 +1046,7 @@ int Search::quiescence(Board& board, int ply, int alpha, int beta, int quiet_che
         push_nnue(board, undo);
         searched_move = true;
 
-        const int next_quiet_check_depth = !in_check && !is_tactical(move) ? quiet_check_depth - 1 : 0;
-        const int score = -quiescence(board, ply + 1, -beta, -alpha, next_quiet_check_depth);
+        const int score = -quiescence(board, ply + 1, -beta, -alpha);
         pop_nnue();
         pop_position();
         board.unmake_move(undo);
